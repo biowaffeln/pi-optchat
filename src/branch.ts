@@ -98,7 +98,9 @@ export async function startBranch(profile: string, cwd: string, warn: (text: str
   mkdirSync(branchesDirectory(profile), { recursive: true, mode: 0o700 });
   // Branch folders hold runs and their transcripts; the profile's Git checkpoints skip those, as they skip the profile's own runs.
   const ignore = join(branchesDirectory(profile), '.gitignore');
-  if (!existsSync(ignore)) atomicWrite(ignore, '*/runs/\n*.sock\n*.tmp\n');
+  // So do what a branch publishes for its peers, which changes every turn.
+  const ignored = '*/runs/\n*.sock\n*.tmp\n*/view.txt\n*/turn.txt\n*/notes.read\n';
+  if (!existsSync(ignore) || readFileSync(ignore, 'utf8') !== ignored) atomicWrite(ignore, ignored);
   let id: string, dir: string;
   do { id = randomBytes(4).toString('hex').slice(0, 6); dir = branchDirectory(profile, id); } while (existsSync(dir));
   mkdirSync(dir, { mode: 0o700 });
