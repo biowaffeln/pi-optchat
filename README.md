@@ -8,7 +8,7 @@ A Pi extension that gives you one endless chat per profile, remembered through a
 - **Profiles**: separate memories and instructions, such as `work` and `personal`.
 - **Subagents**: delegate tasks to background agents, watch them live, and send them guidance.
 - **Import**: bring in history from Claude Code (conversations and memories), Codex, Pi and [OMP](https://github.com/can1357/oh-my-pi), or ChatGPT.
-- **Connected windows**: a second Pi window on the same profile becomes a subagent you talk to directly, or opens an existing background subagent.
+- **Sessions as branches**: open the same profile in as many Pi windows as you like. Each is a full chat that starts from the profile's shared memory and merges back into it when it closes or goes idle.
 
 It runs inside ordinary Pi, with no fork or separate launcher.
 
@@ -33,7 +33,7 @@ To uninstall, run `pi remove git:github.com/jonaslsaa/pi-optchat`. Profile data 
 2. Choose **+ Create profile** and name it, for example `work`.
 3. Chat normally.
 
-The footer shows the active profile. Memory follows the profile across directories and Pi sessions. New sessions show the profile picker with the last-used profile first; resumed sessions restore their profile.
+The footer shows the active profile and this session's branch. Memory follows the profile across directories and Pi sessions; several sessions can be open on one profile at once (see [Several sessions on one profile](#several-sessions-on-one-profile)). New sessions show the profile picker with the last-used profile first; resumed sessions restore their profile.
 
 ### Headless and RPC
 
@@ -65,8 +65,6 @@ The footer shows the active profile. Memory follows the profile across directori
 | `/optchat instructions` | Edit this profile's `AGENTS.md`. |
 | `/optchat browse` | Open a readable snapshot of memory: the shape of what the model sees, summaries you can open down to the original messages, and search that shows where each message is folded. Run again to refresh. |
 | `/optchat import` | Import history, or resume/discard a paused import. |
-| `/complete` | In a connected window: end the conversation and hand off to the main agent. With `--optchat-agent`: detach only, leaving the background agent running. |
-| `/tell-main <message>` | In a connected window: message the main agent. |
 
 ## Models
 
@@ -169,22 +167,16 @@ Pick the destination profile, then run `/optchat import`.
 
 Source paths, selection keys, exactly what is left out, and duplicate rules: [docs/import.md](docs/import.md).
 
-## Connected windows
+## Several sessions on one profile
 
-Each profile is locked to one Pi process. Open the same profile in a second terminal and Pi offers to connect it to the original window as a subagent.
+Every Pi session on a profile is a **branch** of the profile's memory, the **trunk**. There is no main window: open the profile in as many terminals as you like, in different projects, and each is a normal OptChat chat.
 
-- Your first message starts a subagent in the second window's working directory; later messages continue it. The window looks like a normal Pi chat: messages you send while it works queue under the spinner, Esc interrupts, Alt+Up takes the last queued one back.
-- The subagent runs inside the original process, which stays the only writer of memory.
-- `/tell-main <message>` messages the main agent. `/complete` ends the conversation and the compactor writes a handoff for the main agent; closing the window also produces one, marked **interrupted**.
-- Text only. The connection is a local socket restricted to your OS user (on Windows a named pipe, without that restriction; see [Windows](#windows)); no daemon or server.
+- A new session starts from the trunk: everything merged so far, with the same view a single chat would have.
+- It merges what it said back into the trunk when it closes, after **Merge when idle** (30 minutes by default) with nothing new, and when its view batch-merges after another session merged (it then starts again from the trunk's end, so it sees the others).
+- Sessions don't see each other live. Merges are appended in one block each, with original dates kept, so the trunk reads in the order things became shared.
+- A session that crashed is merged, marked as interrupted, the next time the profile opens.
 
-To open an existing background agent instead, pick it from the menu, or pass its ID:
-
-```sh
-pi --optchat-profile work --optchat-agent 8ab62e89
-```
-
-This opens that same agent's session; what you type is guidance to it. Closing the terminal or `/complete` only detaches, and the agent keeps running.
+How merges keep the summary tree and the cache, the locks, and the costs: [docs/branches.md](docs/branches.md).
 
 ## Storage
 
@@ -198,12 +190,12 @@ Profile data lives in `~/.optchat/profiles/<name>/` (override the root with `OPT
 | `imports/pending.json` | Resumable import state |
 | `AGENTS.md` | Profile instructions |
 | `config.json` | Main, compactor and subagent models, and settings |
-| `pending-inputs.json`, `pending-reports.json` | Recovery journals |
-| `runs/` | Subagent sessions and run metadata |
+| `branches/<id>/` | One per session: where it started, its own messages, nodes and view, its recovery journals and its subagents' runs ([docs/branches.md](docs/branches.md#files)) |
+| `runs/` | Subagent sessions from before branches |
 | `usage.jsonl` | Usage ledger |
 | `memory.html` | Snapshot from `/optchat browse` |
 
-- Each profile folder is a local Git repository, committed after each turn. It has no remote, so it is not a backup: copy the folder while Pi is closed.
+- Each profile folder is a local Git repository, committed after each turn (sessions take turns). It has no remote, so it is not a backup: copy the folder while Pi is closed.
 - To delete a profile, delete its folder. Your original Pi sessions are kept in Pi's normal session directory.
 
 Git checkpoints and the pluggable `Store` seam (for memory on another machine): [docs/storage.md](docs/storage.md).
@@ -212,7 +204,7 @@ Git checkpoints and the pluggable `Store` seam (for memory on another machine): 
 
 The same install and commands work on Windows, and the offline tests run there too. What differs:
 
-- The profile lock and connected-window bridge use named pipes instead of socket files, so a Windows profile is not permission-protected the way a POSIX socket file is.
+- The trunk and branch locks use named pipes instead of socket files, so a Windows profile is not permission-protected the way a POSIX socket file is.
 - ZIP exports are read with Windows' own `tar.exe` instead of `unzip`.
 - `~` in a subagent task directory is your home directory; `~\project` is read as a home path only on Windows.
 - File modes and directory fsync are POSIX-only and are skipped.
@@ -225,10 +217,10 @@ Pipe names and permissions: [docs/storage.md](docs/storage.md#windows-difference
 - **Profiles separate memory and instructions only.** Agents keep full filesystem access and share provider credentials.
 - **Use worktrees** when parallel agents edit the same repository; they share the filesystem.
 - **Instructions**: the main agent and subagents get Pi's usual global and repository `AGENTS.md` files and your skills, followed by the profile's `AGENTS.md`, which comes last and wins. OptChat replaces only Pi's opening prompt. Prompt templates work in the main session only.
-- **Tab title**: `π personal` while waiting for you, `● π personal` while the agent works, plus `· 2 agents` while subagents run. A connected window shows `↳ personal`, `● ↳ personal`, then `↳ personal · done` or `↳ personal · disconnected`. OptChat replaces Pi's default title and puts its own back when Pi resets it (new session, reload, rename).
+- **Tab title**: `π personal` while waiting for you, `● π personal` while the agent works, plus `· 2 agents` while subagents run. OptChat replaces Pi's default title and puts its own back when Pi resets it (new session, reload, rename).
 - **Images** you paste, or a tool returns, are kept under the profile's `images/` (once each, shrunk to 2,048 px on the long side and about 1.5 MB with Pi's own resizer; smaller ones stay as they are). The log names each as `[image <hash>]`, and `zoom(id, 1)` returns a message's images with its text. Summaries stay text. Imported conversations keep a text placeholder.
 - **Long turns** (#146): Pi's auto-compaction is off for the main agent, since memory replaces it. Once the current turn's verbatim messages pass the Turn refresh threshold (30% of the model's window by default), they are flushed to memory, the view is rebuilt, and only the task message plus the last tool call and its result stay verbatim; the earlier steps are the view's last lines, a zoom away. In an A/B on a 200K model, turns that otherwise gave up around 100K tokens kept going and covered the whole task. `OPTCHAT_REFRESH_AT` (a fraction, e.g. `0.3`; `0` is off) overrides the setting. Subagents use Pi's own compaction instead, starting at about the same point.
-- **Restarts**: unsent inputs are recovered into memory, and pending subagent reports are delivered.
+- **Restarts**: unsent inputs are recovered into memory. Subagent reports a session never delivered go into its memory when it closes, or when a crashed session is recovered.
 - **Prompt-template inputs** can be saved twice: expanded, and later in their original form as an unanswered input, because Pi expands them after the input journal records them. Skill commands (`/skill:name`) are matched back to their journaled input and don't have this problem. Plain text chat is unaffected.
 
 ## How it differs from the recipe
@@ -249,7 +241,8 @@ OptChat keeps the recipe's numbers: 512-byte lines, binary merges, the 128,000 �
 | Memory search | Not there | Opt-in `search` over original messages | Exact names, numbers and errors the view doesn't show |
 | Large messages | Returned whole, middle cut by the 30,000-character cap | `zoom(id, 1)` pages at 25,000 characters | Nothing cut out |
 | Long turns | No limit; a long turn can run out of window | Turn refresh at 30% of the window | Turns kept going past ~100K tokens (#146) |
-| Profiles, inspector, usage, import, connected windows | Not there | Added | |
+| Profiles, inspector, usage, import | Not there | Added | |
+| Several chats | One chat, one writer; more places means more windows onto it | Every session is a branch that merges into the profile's trunk | Separate workstreams without a main window ([docs/branches.md](docs/branches.md)) |
 | Computer use, always-on hosting | In the recipe | Not done | |
 
 ## Development
