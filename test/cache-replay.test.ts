@@ -22,6 +22,10 @@ import { buildContext, logMessage, textContent } from '../src/transcript.ts';
 import { emptyUsage } from '../src/usage.ts';
 
 const LOOK = 20;
+/** OPTCHAT_CACHE_REPORT=1 sends a system prompt about the size of Pi's (with AGENTS.md, skills and tool docs) and prints what each
+ * kind of request read and wrote, for comparing cache changes; see docs/recipe-differences.md. */
+const REPORT = !!process.env.OPTCHAT_CACHE_REPORT;
+const SYSTEM = REPORT ? `${MASTER}\n\n${'Tool and project notes. '.repeat(1500)}` : undefined;
 type Block = Record<string, unknown>;
 type Body = { system?: Block[]; tools?: unknown; messages: { role: string; content: string | Block[] }[] };
 /** Characters a kind of request read from the cache; could have read with a mark on every block, the longest prefix an earlier
@@ -114,7 +118,7 @@ test('turns and compactions read nearly all their input from the cache, also aft
     logMessage(memory, task);
     for (let step = 0; ; step++) {
       fake.as(step === 0 && long ? 'turn after a long one' : 'turn');
-      const reply = await registry.streamSimple(model, { messages: convertToLlm(buildContext([], run, view, MASTER, previous)) }, { onPayload: payload => cachePayload(payload) }).result();
+      const reply = await registry.streamSimple(model, { ...SYSTEM && { systemPrompt: SYSTEM }, messages: convertToLlm(buildContext([], run, view, MASTER, previous)) }, { onPayload: payload => cachePayload(payload) }).result();
       assert.equal(reply.stopReason, 'stop', reply.errorMessage);
       const next = step < steps ? assistant([{ type: 'toolCall', id: `t${step}`, name: 'zoom', arguments: { query: text('tool', 20, 400) } }])
         : assistant([{ type: 'text', text: text('talk', 100, 2500) }]);
@@ -140,6 +144,10 @@ test('turns and compactions read nearly all their input from the cache, also aft
   // long turn's lines new), compactions 98.4% (95.3%), the cold backlog 98.4% (95.2%). Compactions miss where a line inside their
   // view changes or a view ends before a sibling's. One view mark reads 0% after a long turn; no gate, 89% in the backlog; messages
   // built before merges (#194), 73%.
+  if (REPORT) {
+    const rows = [...Object.entries(replay), ['cold restart', fake.uses.compaction] as const];
+    console.log(JSON.stringify(Object.fromEntries(rows.map(([kind, use]) => [kind, { requests: use.n, sent: use.sent, read: use.read, written: use.sent - use.read }]))));
+  }
   assert.deepEqual(fake.refused, [], 'Anthropic takes at most 4 marks, and no top-level one beside block marks');
   assert.equal(fake.taskMarks(), 0, 'no compaction marks its task');
   for (const [kind, use] of [...Object.entries(replay), ['cold restart', fake.uses.compaction] as const])

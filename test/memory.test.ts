@@ -265,9 +265,10 @@ test('the view goes in blocks of 4 lines, with marks on its last whole block, 20
     };
     const output = cachePayload(payload) as typeof payload & { cache_control?: unknown };
     assert.equal((JSON.stringify(output).match(/cache_control/g) ?? []).length, 4, quoted ? 'a quoted closing tag keeps the marks' : 'plain view');
-    assert.ok(output.system.every(b => !('cache_control' in b)) && !('cache_control' in output.tools[0]));
+    assert.deepEqual(output.system.map(b => 'cache_control' in b), [false, true], 'the system prompt is marked once, on its last block');
+    assert.ok(!('cache_control' in output.tools[0]), 'the tools come before the system prompt, so its mark covers them');
     const blocks = output.messages[0].content;
-    assert.deepEqual(blocks.flatMap((b, j) => 'cache_control' in b ? [j] : []), [pieces.length - 42, pieces.length - 22, pieces.length - 2, blocks.length - 1]);
+    assert.deepEqual(blocks.flatMap((b, j) => 'cache_control' in b ? [j] : []), [pieces.length - 22, pieces.length - 2, blocks.length - 1]);
     assert.equal(output.cache_control, undefined, 'no top-level automatic mark');
     assert.deepEqual(blocks.at(-1)!.cache_control, { type: 'ephemeral' }, 'the end mark sits on the last block');
     assert.equal(blocks.map(b => b.text).join(''), view + 'new question');
@@ -318,6 +319,23 @@ test('after a turn adds up to 60 blocks of lines, a mark of the next call still 
   const found = (added: number) => marks(1000 + added).some(next => marks(1000).some(last => next >= last && next - last <= 20));
   assert.ok([4, 100, 240].every(found), 'a turn that adds 1, 25 or 60 blocks');
   assert.ok(!found(400), 'beyond 60 blocks the last entry is out of reach');
+  // With a system prompt, its mark takes the one 40 blocks back: a turn reaches 40 blocks (160 lines), a compaction still 60.
+  const withSystem = (lines: number, end = true) => {
+    const payload = { system: [{ type: 'text', text: 'system' }], messages: [{ role: 'user', content: [{ type: 'text', text: '<chat>\n' + line.repeat(lines) + '</chat>' }] }] };
+    return (cachePayload(payload, { end }) as typeof payload).messages[0].content.flatMap((b, j) => 'cache_control' in b ? [j] : []);
+  };
+  const reach = (added: number, end = true) => withSystem(1000 + added, end).some(next => withSystem(1000, end).some(last => next >= last && next - last <= 20));
+  assert.ok([4, 100, 160].every(added => reach(added)) && !reach(240), 'a turn that adds up to 40 blocks');
+  assert.ok(reach(240, false) && !reach(400, false), 'a compaction that adds up to 60 blocks');
+});
+
+test('a view written anew still reads the system prompt and tools from the cache: they carry their own mark', () => {
+  const payload = (view: string) => ({ system: 'You are OptChat. A long, stable system prompt.', tools: [{ name: 'zoom' }],
+    messages: [{ role: 'user', content: [{ type: 'text', text: view }, { type: 'text', text: 'hi' }] }] });
+  const output = cachePayload(payload('<chat>\n' + '0+1|a line\n'.repeat(100) + '</chat>')) as { system: { text: string; cache_control?: unknown }[] };
+  assert.deepEqual(output.system, [{ type: 'text', text: 'You are OptChat. A long, stable system prompt.', cache_control: { type: 'ephemeral' } }], 'a string prompt becomes one marked block');
+  const empty = cachePayload({ system: '', messages: [{ role: 'user', content: [{ type: 'text', text: '<chat>\n' + '0+1|a line\n'.repeat(400) + '</chat>' }] }] });
+  assert.equal((JSON.stringify(empty).match(/cache_control/g) ?? []).length, 4, 'with no system prompt the view keeps all three marks');
 });
 
 test('the most due pair is the one that ended longest ago in its own line size, so the view merges as Taelin\'s rollback push', () => {

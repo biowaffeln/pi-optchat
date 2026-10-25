@@ -248,7 +248,7 @@ OptChat keeps the recipe's numbers: 512-byte lines, binary merges, the 128,000 �
 | Memory view | Sawtooth, 128,000 → 64,000 bytes | Same, saved to `view.json` with the compactions' view and reloaded as they were | A restart keeps both prompt prefixes cached |
 | Compaction view | Ends at the first unsummarized line | Shows that line as a placeholder and keeps the lines after it | Cutting there hid short lines like an echo's own tool call; summaries scored lower (#101) |
 | Tool-result summaries | Result only | Also sees the raw tool call | Recall 3.88 → 4.22 (#153) |
-| Cache marks | View in 4-line blocks, one mark on the last whole block | Two more marks, 20 and 40 blocks before it | With one mark, a turn that added over 80 lines made the next turn rewrite the whole view; now up to 240 lines still read from cache |
+| Cache marks | View in 4-line blocks, one mark on the last whole block, one on the system prompt | One more mark 20 blocks before it (and 40 before it for compactions) | With one mark, a turn that added over 80 lines made the next turn rewrite the whole view; now up to 160 lines still read from cache |
 | Previous exchange | Memory view only | Last request and answer in full (up to 16 KB) | "Why is that?" refers to what you actually read |
 | Subagents | Reports start `[Name]` | Built in with Pi's SDK, not a separate package; reports start `[id]`; Subagent levels setting (default 1) | |
 | Memory search | Not there | Opt-in `search` over original messages | Exact names, numbers and errors the view doesn't show |

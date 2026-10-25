@@ -17,9 +17,12 @@ export function splitView(text: string) {
 }
 
 /** How many blocks before the view's last whole one each mark sits. Anthropic looks back only 20 blocks from a mark for an
- * earlier entry, so the marks 20 and 40 blocks back still find the last call's entry after a turn of tool calls adds up to
- * 60 blocks (240 lines). With the end of the request, that is Anthropic's limit of 4 marks. */
+ * earlier entry, so the mark 20 blocks back still finds the last call's entry after a turn of tool calls adds up to 40 blocks
+ * (160 lines), and one 40 back up to 60 blocks (240 lines). Anthropic takes 4 marks: the system prompt gets one, so a view
+ * written anew (a batch merge, a new session) writes only itself, as in the recipe; a turn's end gets one; the view gets the
+ * rest, so a turn marks 0 and 20 back, and a compaction, whose end is unmarked, 0, 20 and 40 back. */
 const MARKS = [0, 20, 40];
+const LIMIT = 4;
 
 /** The status line's own message, in Pi's context and in Anthropic's payload alike. */
 export const isAtWork = (message: unknown) => record(message) && message.role === 'user' && Array.isArray(message.content) && message.content.length === 1
@@ -46,17 +49,21 @@ export function cachePayload(payload: unknown, { end: markEnd = true } = {}): un
     // A subagent's task follows the view in the same text. Lines never hold a newline, so the first one before </chat> ends the view;
     // the task goes in its own block, so the view's marks fall on lines its siblings share and they can read one another's entry.
     const text: string = message.content[at].text, close = text.indexOf('\n</chat>'), end = close < 0 ? text.length : close + '\n</chat>'.length;
-    const pieces = splitView(text.slice(0, end)), marked = new Set(MARKS.map(back => pieces.length - 2 - back));
+    const spare = LIMIT - (systemBlock(payload) ? 1 : 0) - (markEnd ? 1 : 0);
+    const pieces = splitView(text.slice(0, end)), marked = new Set(MARKS.slice(0, spare).map(back => pieces.length - 2 - back));
     const blocks = pieces.map((text, j) => ({ type: 'text', text, ...(marked.has(j) ? { cache_control: { type: 'ephemeral' } } : {}) }));
     message.content.splice(at, 1, ...blocks, ...(end < text.length ? [{ type: 'text', text: text.slice(end) }] : []));
     for (const block of blocks) view.add(block);
     break;
   }
   if (!view.size) return payload;
-  // These marks only: Pi's own system, tool and recent-message marks are dropped.
+  // These marks only: Pi's own system, tool and recent-message marks are dropped, and the system prompt's last block gets ours,
+  // which covers the tools too (they come first in Anthropic's prefix).
   for (const section of [payload.system, payload.tools]) {
     if (Array.isArray(section)) for (const item of section) if (record(item)) delete item.cache_control;
   }
+  const system = systemBlock(payload);
+  if (system) system.cache_control = { type: 'ephemeral' };
   for (const message of messages) {
     if (!record(message)) continue;
     delete message.cache_control;
@@ -69,6 +76,13 @@ export function cachePayload(payload: unknown, { end: markEnd = true } = {}): un
   const end = markEnd ? turn ?? endBlock(messages) : undefined;
   if (end) end.cache_control = { type: 'ephemeral' };
   return payload;
+}
+
+/** The system prompt's last block, made a block list first if it was sent as a string. None for an empty prompt. */
+function systemBlock(payload: Record<string, unknown>) {
+  if (typeof payload.system === 'string') payload.system = payload.system ? [{ type: 'text', text: payload.system }] : undefined;
+  const block: unknown = Array.isArray(payload.system) ? payload.system.at(-1) : undefined;
+  return record(block) && block.type === 'text' && typeof block.text === 'string' && block.text ? block : undefined;
 }
 
 /** The last block of the last non-system message that can carry a mark (thinking blocks can't). */

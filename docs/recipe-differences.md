@@ -35,7 +35,9 @@ Where the recipe ends a compaction's view at the first line not summarized yet, 
 
 ## Cache marks
 
-Anthropic requests split the view into blocks of 4 lines, with cache marks on the last whole one and on the blocks 20 and 40 before it. Anthropic looks back only 20 blocks from a mark, so with the recipe's one view mark a turn that added more than 80 lines (such as 40 tool calls and their results) made the next turn rewrite the whole view. With the two extra marks, a turn that adds up to 240 lines still reads the last view from the cache. OpenAI requests get no marks (see `docs/victor-recipe.md`).
+Anthropic requests split the view into blocks of 4 lines, with cache marks on the last whole one and on the block 20 before it. The system prompt gets a mark too, as in the recipe, so a view written anew (a batch merge, a new session) writes only itself and reads the system prompt and tools from the cache. Anthropic looks back only 20 blocks from a mark, so with the recipe's one view mark a turn that added more than 80 lines (such as 40 tool calls and their results) made the next turn rewrite the whole view. With the extra mark, a turn that adds up to 160 lines still reads the last view from the cache. A compaction leaves its end unmarked, so its view gets a third mark 40 blocks back and reaches 240 lines. OpenAI requests get no marks (see `docs/victor-recipe.md`).
+
+`OPTCHAT_CACHE_REPORT=1 npm test -- test/cache-replay.test.ts` replays a long chat against a fake Anthropic with a Pi-sized system prompt and prints what each kind of request read and wrote; it is how marks are compared.
 
 When that view is not cached yet, one compactor call goes first and the others wait until it starts answering, so they read the cache instead of each writing it.
 
