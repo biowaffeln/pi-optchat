@@ -1,11 +1,10 @@
-import { mock, test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, existsSync, mkdtempSync } from 'node:fs';
+import { appendFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Memory, type Entry, type Summary } from '../src/memory.ts';
-import { FileStore, localDay, type Lease, type Saved, type Store } from '../src/store.ts';
-import { holdProfile, HEARTBEAT_MS, isWindows, ProfileBusyError, profileSocket } from '../src/profiles.ts';
+import { FileStore, localDay, type Saved, type Store } from '../src/store.ts';
 import { removeDir } from './support.ts';
 
 const entry = (i: number, text: string): Entry => ({ i, kind: 'user', text, size: 0, date: '2026-10-09T12:00:00.000Z' });
@@ -65,29 +64,6 @@ test('FileStore: a line torn by a crash is skipped with a warning, and the next 
     reopened.append(entry(1, 'after the crash'));
     assert.deepEqual(new FileStore(dir, () => {}).load().entries, [entry(0, 'kept'), entry(1, 'after the crash')]);
   } finally { removeDir(dir); }
-});
-
-test('a store with a lease holds the profile instead of the local lock, renews it, and frees it on release', async () => {
-  // Two machines sharing one lease table.
-  let holder: string | undefined, beats = 0;
-  const machine = (): { lock: Lease } => ({ lock: {
-    async lease(_profile, who) { if (holder !== undefined) return holder; holder = who; return undefined; },
-    async heartbeat() { beats++; },
-    async release() { holder = undefined; },
-  } });
-  const dir = temp();
-  mock.timers.enable({ apis: ['setInterval'] });
-  try {
-    const release = await holdProfile(machine(), dir, 'work', 'laptop', () => {});
-    if (!isWindows) assert.equal(existsSync(profileSocket(dir)), false, 'the machine-local lock is not taken');
-    await assert.rejects(holdProfile(machine(), dir, 'work', 'desktop', () => {}), error => error instanceof ProfileBusyError && error.owner === 'laptop');
-    mock.timers.tick(HEARTBEAT_MS * 3);
-    assert.equal(beats, 3);
-    await release();
-    mock.timers.tick(HEARTBEAT_MS * 3);
-    assert.equal(beats, 3, 'no renewals after release');
-    await (await holdProfile(machine(), dir, 'work', 'desktop', () => {}))();
-  } finally { mock.timers.reset(); removeDir(dir); }
 });
 
 /** A store that writes behind, each write landing sooner than the one before it, unless it was started while `fail` was set. */

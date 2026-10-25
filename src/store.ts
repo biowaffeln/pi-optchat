@@ -14,19 +14,6 @@ export interface Saved { entries: unknown[]; tree: unknown[]; view?: string }
 type Write = Promise<void> | undefined;
 type Maybe<T> = T | Promise<T>;
 
-/** Cross-machine exclusivity. Implement it only if you want it: without it OptChat keeps its machine-local lock (a socket in the
- * profile, or a named pipe on Windows), so two Pis on one machine still can't share a profile. */
-export interface Lease {
-  /** Takes the profile for `holder` (who and where, shown to anyone refused), or returns the current holder.
-   * A lease not renewed for about 30 seconds may be taken by someone else. */
-  lease(profile: string, holder: string): Promise<string | undefined>;
-  /** Renews the lease. OptChat calls it every 10 seconds while it holds the profile and only warns when it fails, so fencing is
-   * the store's job: once its lease may have lapsed, it must refuse writes (for example with a fencing token checked on each one),
-   * since a paused process cannot be trusted to stop itself in time. */
-  heartbeat(): Promise<void>;
-  release(): Promise<void>;
-}
-
 /** Where one memory keeps what travels between machines: its message log, summary nodes, saved view and images. Everything else
  * in a profile (runs, recovery journals, the active-memory pointer and imports, usage, settings, AGENTS.md) stays on the machine.
  * Memory loads once when it opens, then works in RAM and issues every write in order. */
@@ -40,7 +27,6 @@ export interface Store {
   saveView(view: string): Write;
   putImage(name: string, mimeType: Mime, data: Uint8Array): Write;
   image(name: string): Maybe<{ mimeType: Mime; data: Uint8Array } | undefined>;
-  lock?: Lease;
 }
 
 /** The one place a profile's store is chosen. A `store` setting will plug in here; until then every profile keeps its memory in files. */

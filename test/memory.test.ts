@@ -9,7 +9,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Memory, Refused, cap, CAP, SOURCE, NODE, start, end, bytes, mostDue, type Compression, type Part } from '../src/memory.ts';
 import { appendJson, localDay } from '../src/store.ts';
-import { lockProfile } from '../src/profiles.ts';
 import { splitView, cachePayload } from '../src/cache.ts';
 import { logMessage, buildContext, boundedMessage } from '../src/transcript.ts';
 import { Inbox } from '../src/inbox.ts';
@@ -237,17 +236,6 @@ test('two writers that each summarize the same log leave a tree that still loads
     await reopened.settle(AbortSignal.timeout(5000), 'tree');
     assert.equal(reopened.root.length, 3); assert.equal(reopened.tree.size, a.tree.size);
   } finally { await reopened.close(); removeDir(dir); }
-});
-
-test('a live profile cannot be opened by a second writer; other profiles can run', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'optchat-test-'));
-  const unlock = await lockProfile(dir, 'test owner');
-  try {
-    await assert.rejects(lockProfile(dir, 'second writer'), /test owner/);
-    mkdirSync(dir + '-other');
-    const other = await lockProfile(dir + '-other', 'other profile'); await other(); removeDir(dir + '-other');
-  } finally { await unlock(); }
-  const again = await lockProfile(dir, 'after close'); await again(); removeDir(dir);
 });
 
 test('the view goes in blocks of 4 lines, with marks on its last whole block, 20 and 40 blocks before it, and at the request\'s end', () => {
