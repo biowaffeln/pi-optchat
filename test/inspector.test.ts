@@ -122,11 +122,6 @@ test('Tab cycles Agents, Usage and Activity; Activity is a memory gauge with an 
       'Agents · 1 running']);
     children.history.records.set('paused', { id: 'paused', task: 'wait', cwd: dir, model: 'test', thinking: 'high', parentSession: 'parent', depth: 1, started: Date.now(), state: 'paused', guidance: [] });
     assert.equal(page().at(-1), 'Agents · 1 running · 1 interrupted', 'an interrupted agent is neither running nor finished');
-    const handoff: { reason: 'complete'; delivered?: boolean } = { reason: 'complete' };
-    children.history.records.set('window', { id: 'window', task: 'chat', cwd: dir, model: 'test', thinking: 'high', parentSession: 'parent', depth: 1, started: Date.now(), state: 'completed', connected: true, handoff, guidance: [] });
-    assert.equal(page().at(-1), 'Agents · 1 running · 1 interrupted · 1 handing off', 'a completed window is still at work until its handoff reaches the main agent');
-    handoff.delivered = true;
-    assert.equal(page().at(-1), 'Agents · 1 running · 1 interrupted');
     inspector.handleInput('\t'); assert.equal(title(), 'OptChat · personal · Agents');
   } finally { inspector.dispose(); await children.close(); await memory.close(); removeDir(dir); }
 });
@@ -147,9 +142,6 @@ test('the Activity bar item shows a dot only while summaries or agents are at wo
     total = 0; children.history.records.set('run', { id: 'run', task: 'review', cwd: dir, model: 'test', thinking: 'high', parentSession: 'parent', depth: 1, started: Date.now(), state: 'paused', guidance: [] });
     assert.match(bar(), /Agents: 0 running · 1 interrupted · 0 saved/);
     assert.doesNotMatch(bar(), /●/, 'an agent waiting for the user is not at work');
-    children.history.records.set('window', { id: 'window', task: 'chat', cwd: dir, model: 'test', thinking: 'high', parentSession: 'parent', depth: 1, started: Date.now(), state: 'completed', connected: true, handoff: { reason: 'complete' }, guidance: [] });
-    assert.match(bar(), /Agents: 0 running · 1 interrupted · 1 handing off · 0 saved {3}Usage {3}● Activity/);
-    children.history.records.delete('window');
     children.history.records.get('run')!.state = 'running';
     assert.match(bar(), /● Activity/);
   } finally { unmount(); await children.close(); await memory.close(); removeDir(dir); }

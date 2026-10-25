@@ -7,8 +7,6 @@ import { createAssistantMessageEventStream, type AssistantMessage } from '@earen
 import { ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createCompressor } from '../src/compactor.ts';
 import { COMPACT, compaction } from '../src/prompts.ts';
-import { createHandoffSummarizer } from '../src/handoff.ts';
-import type { RunInfo } from '../src/runs.ts';
 import { bytes, NODE } from '../src/memory.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
@@ -96,30 +94,6 @@ test('a line over the limit is sent back with the recipe\'s "Too long" cut, and 
   assert.ok(sentStep.endsWith(`<input>\n${source}\n</input>`), 'the retry keeps the task as it was');
   assert.equal(sentRetry, `\n\nToo long: your line is 700 bytes, over the 512-byte limit. Write\nthe whole line again for the same <input>, cutting just enough of the\nleast valuable items to fit before this cut:\n${'x'.repeat(NODE)}| ← LIMIT`);
   assert.deepEqual(await attempts(1, { first: '12+4|user: kept' }), { calls: 1, bytes: 'user: kept'.length });
-});
-
-test('handoffs clamp the compactor\'s thinking level too', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'optchat-size-'));
-  const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
-  let sent: string | undefined;
-  runtime.registerProvider('optchat-test', {
-    baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
-    models: [{ id: 'compactor', name: 'Synthetic compactor', reasoning: true, thinkingLevelMap: { off: null, minimal: null }, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
-    streamSimple(model, _context, options) {
-      sent = options?.reasoning;
-      const stream = createAssistantMessageEventStream();
-      const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: 'Handoff.' }], api: model.api,
-        provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: 'stop', usage: emptyUsage() };
-      queueMicrotask(() => { stream.push({ type: 'done', reason: 'stop', message }); stream.end(); });
-      return stream;
-    },
-  });
-  try {
-    const summarize = createHandoffSummarizer(new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'compactor', thinking: 'off' }), () => {});
-    const run: RunInfo = { id: 'a1', task: 'Task', cwd: dir, model: 'optchat-test/compactor', thinking: 'off', parentSession: 'main', started: 0, depth: 1, state: 'completed', guidance: [] };
-    assert.equal(await summarize(run, []), 'Handoff.');
-    assert.equal(sent, 'low', 'the fixture asks for "off"');
-  } finally { removeDir(dir); }
 });
 
 test('the compactor prompt ends with the recipe\'s note that this is a small job, to keep thinking short', () => {

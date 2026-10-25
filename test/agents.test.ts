@@ -921,17 +921,6 @@ test('with grouped reports, a child the user pauses lets its siblings report tog
   } finally { await children.close(); removeDir(dir); }
 });
 
-test('a connected run whose handoff has not been delivered is kept', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'optchat-delete-handoff-'));
-  const { children } = await busyChildren(dir, []);
-  try {
-    children.history.save({ id: 'window', task: 'talk', cwd: dir, model: 'test', thinking: 'high', parentSession: '', depth: 1, started: 1, ended: 2,
-      state: 'interrupted', connected: true, handoff: { reason: 'disconnected' }, guidance: [] });
-    await assert.rejects(children.remove('window'), /handoff has not reached the main agent/);
-    assert.ok(existsSync(join(dir, 'profile', 'runs', 'window.optchat.json')));
-  } finally { await children.close(); removeDir(dir); }
-});
-
 /** Children whose model answers at once; `asked` gets each request's model and thinking level. */
 async function quickChildren(dir: string, memory = new Memory(join(dir, 'profile'), async input => input.source.slice(0, 100), () => {}), asked: string[] = []) {
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });

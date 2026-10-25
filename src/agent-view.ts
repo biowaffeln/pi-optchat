@@ -6,7 +6,7 @@ import {
 import { Editor, Spacer, compositeTuiLine, matchesKey, truncateToWidth, visibleWidth, type Component, type Focusable, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from '@earendil-works/pi-tui';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { Children } from './agents.ts';
-import { isHandingOff, type RunInfo } from './runs.ts';
+import type { RunInfo } from './runs.ts';
 import { textContent } from './transcript.ts';
 import { record } from './cache.ts';
 import { elapsed, fit, oneLine } from './inspector.ts';
@@ -25,13 +25,10 @@ const builtIns: Record<string, (cwd: string) => Renderers> = {
 
 /** Reports from the child's own agents start with their id, e.g. "[1a2b3c4d] ...". */
 const REPORT = /^\[[0-9a-f]{8}\] /;
-/** Connected windows prefix the main agent's guidance with this line. */
-const MAIN_PREFIX = '[Main agent guidance]\n';
 
 /** Who a user-role message in the child's conversation came from. Runs saved before senders were recorded count as the user's. */
 export function senderOf(text: string, guidance: Guidance = []): 'user' | 'manager' | 'report' {
   if (REPORT.test(text)) return 'report';
-  if (text.startsWith(MAIN_PREFIX)) return 'manager';
   return guidance.findLast(g => g.text === text)?.from === 'manager' ? 'manager' : 'user';
 }
 
@@ -104,7 +101,7 @@ export class TranscriptView {
         let component = this.messages.get(message);
         if (!component) {
           const sender = opening ? 'user' : senderOf(text, guidance);
-          component = sender === 'manager' ? boxed('main agent', text.startsWith(MAIN_PREFIX) ? text.slice(MAIN_PREFIX.length) : text, message.timestamp)
+          component = sender === 'manager' ? boxed('main agent', text, message.timestamp)
             : sender === 'report' ? boxed('agent report', text, message.timestamp)
             : new UserMessageComponent(text, getMarkdownTheme());
           this.messages.set(message, component);
@@ -164,7 +161,7 @@ export interface AgentViewOptions {
 
 const statusOf = (run: RunInfo, children: Children) => {
   const live = children.live(run.id);
-  if (!live) return isHandingOff(run) ? 'handing off' : run.state;
+  if (!live) return run.state;
   if (run.state === 'stopping') return 'stopping';
   if (run.state === 'waiting') return 'waiting for its agents';
   if (run.state === 'paused') return 'interrupted · waiting for you';

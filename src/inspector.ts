@@ -2,7 +2,7 @@ import { matchesKey, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithA
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { Children } from './agents.ts';
 import type { Memory } from './memory.ts';
-import { isActiveRun, isHandingOff, isRunning } from './runs.ts';
+import { isActiveRun, isRunning } from './runs.ts';
 import type { Usage } from '@earendil-works/pi-ai';
 import { ranges, summarizeUsage, type UsageLedger, type UsageRange, type UsageRole } from './usage.ts';
 
@@ -162,12 +162,12 @@ export class Inspector implements Component, Focusable {
   private activityLines(width: number) {
     const { memory, children, color } = this.options;
     const { done, total, retryIn } = memory.progress();
-    const list = children.history.list(), agents = list.filter(isRunning).length, paused = list.filter(r => r.state === 'paused').length, handingOff = list.filter(isHandingOff).length;
+    const list = children.history.list(), agents = list.filter(isRunning).length, paused = list.filter(r => r.state === 'paused').length;
     const filled = total ? Math.floor(10 * done / total) : 0;
     const lines = [`${color('muted', 'Memory')} · ${count(memory.root.length)} messages · view ${Math.round(memory.size / 1000)} KB / ${Math.round(memory.budget / 1000)} KB`,
       total ? `Catching up · ${count(done)} of ${count(total)} summaries  ${color('accent', '█'.repeat(filled))}${color('dim', '░'.repeat(10 - filled))}` : color('dim', 'Settled')];
     if (memory.lastError) lines.push(color('dim', `${oneLine(memory.lastError)}${retryIn === undefined ? '' : ` · retry in ${elapsed(retryIn)}`}`));
-    lines.push('', `${color('muted', 'Agents')} · ${agents} running${paused ? ` · ${paused} interrupted` : ''}${handingOff ? ` · ${handingOff} handing off` : ''}`);
+    lines.push('', `${color('muted', 'Agents')} · ${agents} running${paused ? ` · ${paused} interrupted` : ''}`);
     return lines.flatMap(l => l ? wrapTextWithAnsi(l, width) : ['']);
   }
   render(width: number): string[] {
@@ -190,7 +190,7 @@ export class Inspector implements Component, Focusable {
       if (cursor >= this.top + this.height) this.top = cursor - this.height + 1;
       const rows = list.slice(this.top, this.top + this.height).map(run => {
         const live = children.live(run.id), tools = live ? [...live.tools.values()].map(t => t.name).join(', ') : '';
-        const status = live ? `${run.state === 'stopping' ? 'stopping' : run.state === 'waiting' ? 'waiting for children' : run.state === 'paused' ? 'interrupted · waiting for you' : tools || (live.streaming ? 'responding' : 'working')} · ${elapsed(Date.now() - live.updated)} ago` : isHandingOff(run) ? 'handing off' : run.state;
+        const status = live ? `${run.state === 'stopping' ? 'stopping' : run.state === 'waiting' ? 'waiting for children' : run.state === 'paused' ? 'interrupted · waiting for you' : tools || (live.streaming ? 'responding' : 'working')} · ${elapsed(Date.now() - live.updated)} ago` : run.state;
         return { run, task: `${'  '.repeat(run.depth - 1)}${run.parentId ? '↳ ' : ''}${oneLine(run.task)}`, status, time: elapsed((run.ended ?? Date.now()) - run.started) };
       });
       // Columns: task (flexible) · status · duration (right-aligned); status yields first on narrow screens.

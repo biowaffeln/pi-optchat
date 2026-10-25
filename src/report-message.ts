@@ -2,7 +2,7 @@ import { getMarkdownTheme, type ExtensionAPI, type Theme } from '@earendil-works
 import { Box, Markdown, Text } from '@earendil-works/pi-tui';
 import { REPORT_TYPE, textContent, withoutFullChat } from './transcript.ts';
 
-const HEAD = /^\[([0-9a-f]{8})\] (?:(Message from subagent \(still running\)|Connected agent message): )?/;
+const HEAD = /^\[([0-9a-f]{8})\] (?:(Message from subagent \(still running\)): )?/;
 
 /** Sent with a report: `count` subagent reports joined in one message, when one spawn's reports arrive together. */
 export interface ReportDetails { count?: number }
@@ -13,7 +13,7 @@ export function reportParts(text: string, count = 1) {
   if (count > 1) return { label: `${count} subagent reports`, body: text };
   const match = HEAD.exec(text);
   if (!match) return { label: 'subagent', body: text };
-  const kind = match[2] === undefined ? 'report' : match[2].startsWith('Message') ? 'still running' : 'connected window';
+  const kind = match[2] === undefined ? 'report' : 'still running';
   return { label: `subagent ${match[1]} · ${kind}`, body: text.slice(match[0].length) };
 }
 

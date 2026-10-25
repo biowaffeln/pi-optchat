@@ -148,15 +148,19 @@ test('only the parent resumes a nested child, and the resumed child reports to t
   } finally { await cleanup(children); }
 });
 
-test('resuming refuses connected windows, missing or broken transcripts, and a full profile', async () => {
+test('resuming refuses missing or broken transcripts and a full profile; runs saved by connected windows still load', async () => {
   const { dir, releases, make, cleanup } = await setup('optchat-resume-errors-');
-  // A connected conversation from an earlier session: its handoff was already delivered.
+  // Connected-window conversations saved by an older version: one ended with its handoff, one still open when that Pi died.
   mkdirSync(join(dir, 'runs'), { recursive: true });
-  writeFileSync(join(dir, 'runs', 'window1.optchat.json'), JSON.stringify({ id: 'window1', task: 'chat', cwd: dir, model: 'optchat-test/child', thinking: 'minimal',
-    parentSession: 'old', depth: 1, started: 1, ended: 2, state: 'completed', guidance: [], connected: true, handoff: { reason: 'complete', text: 'done', delivered: true } }));
+  const window = { task: 'chat', cwd: dir, model: 'optchat-test/child', thinking: 'minimal', parentSession: 'old', depth: 1, started: 1, guidance: [], connected: true };
+  writeFileSync(join(dir, 'runs', 'window1.optchat.json'), JSON.stringify({ ...window, id: 'window1', ended: 2, state: 'completed', handoff: { reason: 'complete', text: 'done', delivered: true } }));
+  writeFileSync(join(dir, 'runs', 'window2.optchat.json'), JSON.stringify({ ...window, id: 'window2', state: 'running' }));
   const children = make('session');
   try {
-    await assert.rejects(children.tell('window1', 'hello'), /connected conversation with the user\. It has ended and its handoff was delivered/);
+    assert.equal(children.history.records.get('window1')?.state, 'completed', 'the extra connected and handoff fields are ignored');
+    const open = children.history.records.get('window2');
+    assert.equal(open?.state, 'interrupted', 'an open one is cut off like any active run');
+    assert.equal(open?.cutOff, undefined, 'but is not resumed: its window is gone');
     await assert.rejects(children.tell('nobody', 'hello'), /No running subagent nobody/);
 
     const [gone, broken, full] = await children.spawn([{ task: 'gone' }, { task: 'broken' }, { task: 'full' }], dir);

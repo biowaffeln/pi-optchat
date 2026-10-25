@@ -3,7 +3,7 @@ import { matchesKey, truncateToWidth, visibleWidth, type KeyId } from '@earendil
 import type { Children } from './agents.ts';
 import type { Memory } from './memory.ts';
 import { inspectorShowing, nextPage, type InspectorPage } from './inspector.ts';
-import { isHandingOff, isRunning } from './runs.ts';
+import { isRunning } from './runs.ts';
 
 /** Configured before extension registration; this also works in legacy terminals with F6. */
 export function inspectorShortcut(value = process.env.OPTCHAT_INSPECT_KEY ?? 'f6'): KeyId {
@@ -52,9 +52,9 @@ export function mountNavigation(ctx: ExtensionContext, children: Children, memor
       invalidate() {},
       render(width: number) {
         if (inspectorShowing()) return []; // The open panel replaces the editor and this bar.
-        const list = children.history.list(), running = list.filter(isRunning).length, paused = list.filter(r => r.state === 'paused').length, handingOff = list.filter(isHandingOff).length;
+        const list = children.history.list(), running = list.filter(isRunning).length, paused = list.filter(r => r.state === 'paused').length;
         const label = (page: InspectorPage, text: string) => navigation.selected === page ? theme.fg('accent', `› ${text}`) : theme.fg('muted', text);
-        const left = `${label('agents', `Agents: ${running} running${paused ? ` · ${paused} interrupted` : ''}${handingOff ? ` · ${handingOff} handing off` : ''} · ${list.length - running - paused - handingOff} saved`)}   ${label('usage', 'Usage')}   ${memory.progress().total || running || handingOff ? theme.fg('accent', '● ') : ''}${label('activity', 'Activity')}`;
+        const left = `${label('agents', `Agents: ${running} running${paused ? ` · ${paused} interrupted` : ''} · ${list.length - running - paused} saved`)}   ${label('usage', 'Usage')}   ${memory.progress().total || running ? theme.fg('accent', '● ') : ''}${label('activity', 'Activity')}`;
         const hint = theme.fg('dim', navigation.selected ? '←→ select · Enter open · Esc input' : `${previous ? '' : '↓ select · '}${shortcut} inspect`);
         const gap = width - visibleWidth(left) - visibleWidth(hint);
         return [truncateToWidth(gap >= 3 ? `${left}${' '.repeat(gap)}${hint}` : `${left}   ${hint}`, width)];
