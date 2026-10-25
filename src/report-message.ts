@@ -33,7 +33,6 @@ export function reportBox(text: string, outputPad: number, theme: Theme, count?:
   box.addChild(new Markdown(body.trim(), 0, 0, getMarkdownTheme(), { color: text => theme.fg('muted', text) }));
   return box;
 }
-export const isReport = (text: string) => HEAD.test(text);
 export function registerReportRenderer(pi: ExtensionAPI) {
   pi.registerMessageRenderer<ReportDetails | undefined>(REPORT_TYPE, (message, { outputPad }, theme) => reportBox(textContent(message.content), outputPad, theme, message.details?.count));
 }

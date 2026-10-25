@@ -141,18 +141,6 @@ test('a blocked /new, /resume, /fork or /clone says why and what lets it through
     await agents(['\x18', '\x18']);
     assert.equal(await waitFor(note => note === undefined), undefined, 'once the agent has stopped, /new goes through again');
     assert.deepEqual(await owner.blocked(newSession), { cancel: false, notes: [] });
-
-    const window = await start(join(dir, 'window'), { select: async (_title, options) => options.find(o => o.startsWith('Start a connected')) });
-    sessions.push(window.session);
-    const connected = await window.blocked(newSession);
-    assert.equal(connected.cancel, true);
-    assert.equal(connected.notes.length, 1);
-    assert.match(connected.notes[0], /^\/new is blocked in a connected window\. Run \/complete/);
-
-    await window.session.prompt('Work until stopped.');
-    const owned = await waitFor(note => !!note);
-    assert.match(owned ?? '', /^\/new is blocked while 1 agent is active: [0-9a-f]{8} \(connected window\)\. It ends when that window runs \/complete or closes\.$/,
-      'a connected conversation is not something to wait for or stop from here');
   } finally {
     for (const session of sessions.reverse()) { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); }
     if (oldHome === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = oldHome;

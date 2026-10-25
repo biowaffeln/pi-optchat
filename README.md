@@ -40,8 +40,6 @@ The footer shows the active profile. Memory follows the profile across directori
 - `pi -p`, `--mode rpc` and other extensions' runners need `--optchat-profile work`. Without it (and without a saved profile in a resumed session) the run is plain Pi with no OptChat memory.
 - In hosts that create sessions themselves (Pi Web), send `/optchat profile work` as the first message of a new session.
 
-Details, errors and join rules: [docs/connected-windows.md](docs/connected-windows.md#headless-and-rpc-runs).
-
 ## How it works
 
 - Every message is logged and becomes one line: a short one (up to 512 bytes) word for word, a longer one summarized by the compactor model to about 512 bytes (up to 640 with the default Summary size tolerance).
@@ -187,8 +185,6 @@ pi --optchat-profile work --optchat-agent 8ab62e89
 ```
 
 This opens that same agent's session; what you type is guidance to it. Closing the terminal or `/complete` only detaches, and the agent keeps running.
-
-Details (reload behaviour, handoff limits, attach rules, headless joins): [docs/connected-windows.md](docs/connected-windows.md).
 
 ## Storage
 

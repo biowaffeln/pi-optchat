@@ -1,14 +1,6 @@
-/** Terminal tab titles: `● π personal · 2 agents` in the main window, `● ↳ personal` in a connected window. */
-export type StatusState = 'waiting' | 'working';
-export type WindowState = StatusState | 'done' | 'disconnected';
-
+/** Terminal tab titles: `● π personal · 2 agents` while the agent works with two subagents running. */
 const agents = (count: number) => count > 0 ? ` · ${count} ${count === 1 ? 'agent' : 'agents'}` : '';
 export const mainTitle = (profile: string, working: boolean, running: number) => `${working ? '● ' : ''}π ${profile}${agents(running)}`;
-export const windowTitle = (profile: string, state: WindowState) =>
-  `${state === 'working' ? '● ' : ''}↳ ${profile}${state === 'done' || state === 'disconnected' ? ` · ${state}` : ''}`;
-/** A connected window's agent is working while it runs or stops, or waits on agents of its own; waiting with none means waiting for you. */
-export const statusState = (state: string, agents = 0): StatusState =>
-  state === 'running' || state === 'stopping' || state === 'waiting' && agents > 0 ? 'working' : 'waiting';
 
 /**
  * Pi writes its own "π - <cwd>" title after binding a session (startup, reload, profile switch) and on

@@ -14,7 +14,7 @@ const agentDir = process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), 'o
 after(() => removeDir(agentDir));
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function start(dir: string, ui: Partial<ExtensionUIContext>, bound?: string, talked = false) {
+async function start(dir: string, ui: Partial<ExtensionUIContext>, bound?: string) {
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null,
     modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
   runtime.registerProvider('fixture', {
@@ -28,7 +28,6 @@ async function start(dir: string, ui: Partial<ExtensionUIContext>, bound?: strin
   await loader.reload();
   const manager = SessionManager.create(dir, join(dir, 'sessions'));
   if (bound) manager.appendCustomEntry('optchat.profile', { name: bound });
-  if (talked) manager.appendMessage({ role: 'user', content: 'earlier turn', timestamp: Date.now() });
   const { session } = await createAgentSession({ modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'),
     resourceLoader: loader, settingsManager, sessionManager: manager, tools: ['zoom'] });
   const titles: string[] = [], errors: string[] = [];
@@ -38,82 +37,25 @@ async function start(dir: string, ui: Partial<ExtensionUIContext>, bound?: strin
   return { session, titles, errors, manager };
 }
 
-test('a busy profile offers to connect or pick another profile, and picking another opens it', async () => {
+test('a profile another Pi holds fails to open, names its owner, and the session is not bound to it', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-busy-'));
   const oldHome = process.env.OPTCHAT_HOME;
   process.env.OPTCHAT_HOME = join(dir, 'home');
-  const sessions: Awaited<ReturnType<typeof start>>['session'][] = [];
+  let session: Awaited<ReturnType<typeof start>>['session'] | undefined;
   let unlock: (() => Promise<void>) | undefined;
   try {
-    for (const name of ['busy', 'other', 'third']) {
-      createProfile(name);
-      const config = loadConfig(profilePath(name));
-      saveConfig(profilePath(name), { ...config, compactor: { provider: 'fixture', model: 'fixture', thinking: 'off' }, subagent: { provider: 'fixture', model: 'fixture', thinking: 'off' } });
-    }
-    unlock = await lockProfile(profilePath('busy'), 'busy · PID 1 · elsewhere');
-
-    // New session: pick `busy`, it's taken, choose "Back", then pick `other`.
-    const asked: { title: string, options: string[] }[] = [];
-    const picks = ['busy', 'Back', 'other'];
-    const fresh = await start(dir, { select: async (title, options) => { asked.push({ title, options }); return picks.shift(); } });
-    sessions.push(fresh.session);
-    assert.deepEqual(asked.map(a => a.title.split('\n')[0]), ['OptChat profile', 'busy is open in another window', 'OptChat profile']);
-    assert.match(asked[1].title, /busy · PID 1 · elsewhere/);
-    assert.deepEqual(asked[1].options, ['Start a connected subagent conversation here', 'Back']);
-    assert.equal(fresh.titles[0], 'π other');
-    assert.deepEqual(fresh.errors, []);
-    const bound = fresh.manager.getEntries().filter(e => e.type === 'custom' && e.customType === 'optchat.profile');
-    assert.deepEqual(bound.map(e => e.type === 'custom' && e.data), [{ name: 'other' }], 'the session is bound to the profile actually opened');
-
-    // `/optchat profile` makes a fresh session already bound to its pick; a busy pick can still go Back and rebind.
-    const switchedPicks = ['Back', 'third']; // `other` is held by the session above
-    const switched = await start(dir, { select: async () => switchedPicks.shift() }, 'busy');
-    sessions.push(switched.session);
-    assert.equal(switched.titles[0], 'π third');
-    assert.deepEqual(switched.errors, []);
-    const rebound = switched.manager.getEntries().filter(e => e.type === 'custom' && e.customType === 'optchat.profile');
-    assert.deepEqual(rebound.map(e => e.type === 'custom' && e.data), [{ name: 'busy' }, { name: 'third' }], 'the latest binding wins');
-
-    // A resumed conversation already belongs to `busy`, so it can only connect (or cancel), not switch.
-    const resumedAsked: string[][] = [];
-    const resumed = await start(dir, { select: async (_title, options) => { resumedAsked.push(options); return undefined; } }, 'busy', true);
-    sessions.push(resumed.session);
-    assert.deepEqual(resumedAsked, [['Start a connected subagent conversation here']]);
-    assert.match(resumed.errors.join('\n'), /Profile already running/);
-  } finally {
-    for (const session of sessions) { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); }
-    await unlock?.(); await sleep(50);
-    if (oldHome === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = oldHome;
-    removeDir(dir);
-  }
-});
-
-test('a connected window whose original window closed can leave: /new, /resume, /fork and /optchat profile work again', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'optchat-left-'));
-  const oldHome = process.env.OPTCHAT_HOME;
-  process.env.OPTCHAT_HOME = join(dir, 'home');
-  let owner: Awaited<ReturnType<typeof start>>['session'] | undefined, window: Awaited<ReturnType<typeof start>>['session'] | undefined;
-  try {
     createProfile('busy');
-    owner = (await start(dir, {}, 'busy')).session;
-    const notes: string[] = [], asked: string[] = [];
-    const picks = ['Start a connected subagent conversation here', undefined];
-    window = (await start(dir, { notify: text => { notes.push(text); }, select: async title => { asked.push(title.split('\n')[0]); return picks.shift(); } }, 'busy')).session;
-    const switchBlocked = async () => (await window!.extensionRunner.emit({ type: 'session_before_switch', reason: 'new' }))?.cancel === true;
-    const forkBlocked = async () => (await window!.extensionRunner.emit({ type: 'session_before_fork', entryId: 'x', position: 'at' }))?.cancel === true;
-    assert.equal(await switchBlocked(), true, 'a live connected conversation keeps its window');
-
-    await owner.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); owner.dispose(); owner = undefined;
-    for (let i = 0; i < 200 && !notes.some(n => n.startsWith('Connection closed')); i++) await sleep(10);
-    assert.ok(notes.some(n => n.startsWith('Connection closed')), 'the window saw the owner go');
-    assert.equal(await switchBlocked(), false, '/new and /resume are no longer cancelled');
-    assert.equal(await forkBlocked(), false, '/fork and /clone are no longer cancelled');
-    await window.prompt('/optchat profile');
-    assert.deepEqual(asked, ['busy is open in another window', 'OptChat profile'], '/optchat profile offers the profile picker');
-    assert.ok(!notes.some(n => n.includes('original window')), 'no pointer to a window that is gone');
+    saveConfig(profilePath('busy'), { ...loadConfig(profilePath('busy')), compactor: { provider: 'fixture', model: 'fixture', thinking: 'off' }, subagent: { provider: 'fixture', model: 'fixture', thinking: 'off' } });
+    unlock = await lockProfile(profilePath('busy'), 'busy · PID 1 · elsewhere');
+    const fresh = await start(dir, { select: async () => 'busy' });
+    session = fresh.session;
+    assert.match(fresh.errors.join('\n'), /Profile already running: busy · PID 1 · elsewhere/);
+    assert.deepEqual(fresh.titles, [], 'no profile title, since nothing opened');
+    const bound = fresh.manager.getEntries().filter(e => e.type === 'custom' && e.customType === 'optchat.profile');
+    assert.deepEqual(bound, [], 'a profile that did not open is not saved as the session\'s binding');
   } finally {
-    for (const session of [owner, window]) if (session) { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); }
-    await sleep(50);
+    if (session) { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); }
+    await unlock?.(); await sleep(50);
     if (oldHome === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = oldHome;
     removeDir(dir);
   }

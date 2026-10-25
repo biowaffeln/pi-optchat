@@ -9,7 +9,7 @@ import { Type } from 'typebox';
 import { Memory } from './memory.ts';
 import { atomicWrite, storeFor } from './store.ts';
 import { createCompressor, type ModelChoice } from './compactor.ts';
-import { createProfile, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, profilePath, rememberProfile, saveConfig, ProfileBusyError, type ProfileConfig } from './profiles.ts';
+import { createProfile, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, profilePath, rememberProfile, saveConfig, type ProfileConfig } from './profiles.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, MASTER, modelsHint, SEARCH_DOC, TURN_REFRESHED, VIEW_DOC } from './prompts.ts';
 import { cachePayload, record } from './cache.ts';
 import { saveImages } from './images.ts';
@@ -27,9 +27,6 @@ import { UsageLedger } from './usage.ts';
 import { oneLine, showInspector, type InspectorPage } from './inspector.ts';
 import { showAgentView } from './agent-view.ts';
 import { inspectorShortcut, mountNavigation } from './navigation.ts';
-import { listAttachableAgents, serveWindows } from './window-bridge.ts';
-import { openConnectedWindow, registerConnectedRenderer } from './connected-window.ts';
-import { createHandoffSummarizer } from './handoff.ts';
 import { mainTitle, TabTitle } from './title.ts';
 import { showModelPicker, showSettings } from './settings-page.ts';
 import { showMenu } from './menu.ts';
@@ -52,8 +49,6 @@ const brand = version ? `OptChat v${version}` : 'OptChat';
 
 export default function optchat(pi: ExtensionAPI) {
   let active: Active | undefined;
-  let remote: Awaited<ReturnType<typeof openConnectedWindow>> | undefined;
-  let closeWindows: (() => Promise<void>) | undefined;
   let recovery: Promise<void> | undefined;
   let run: AgentMessage[] = [];
   let previous: AgentMessage[] = [];
@@ -90,7 +85,6 @@ export default function optchat(pi: ExtensionAPI) {
     typeof s === 'string' || record(s) && typeof s.text === 'string' && (s.count === undefined || typeof s.count === 'number');
   const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
   pi.registerFlag('optchat-profile', { description: 'OptChat profile (required for noninteractive sessions without a saved binding)', type: 'string' });
-  pi.registerFlag('optchat-agent', { description: 'Open an existing background agent by exact ID in this terminal (TUI only; requires a running profile owner)', type: 'string' });
   // The main model follows the profile: each pick in Pi is saved to its config.json, and opening the profile picks it again.
   // `--model`/`--provider`/`--thinking` on Pi's command line win over the saved choice for as long as this Pi runs; `--models` only keeps a saved model inside its scope.
   const launch = parseArgs(process.argv.slice(2)), pinnedModel = launch.model !== undefined || launch.provider !== undefined;
@@ -169,15 +163,11 @@ export default function optchat(pi: ExtensionAPI) {
     saveReports();
   };
   const stop = async () => {
-    remote?.close(); remote = undefined;
     inspectorController?.abort(); unmountNavigation?.(); unmountNavigation = undefined;
     stopping = true; importController?.abort(); await importTask?.catch(() => {});
     if (!active) return;
     const old = active;
     try {
-      // Ending connected windows and recovery must not wait on handoff summaries: the next start writes and delivers them.
-      old.children.deferHandoffs();
-      await closeWindows?.(); closeWindows = undefined;
       await recovery;
       await old.children.close(); flush(); if (!pendingImport(old.dir)) old.inbox.recover(old.memory);
       // No checkpoint here: a host may kill Pi a second after asking it to stop (#220). The next turn's checkpoint commits what this wrote.
@@ -188,7 +178,6 @@ export default function optchat(pi: ExtensionAPI) {
       untitle?.(); untitle = undefined; title.clear(); working = false;
     }
   };
-  const CONNECT = 'Start a connected subagent conversation here', BACK = 'Back';
   const chooseProfile = async (ctx: ExtensionContext): Promise<string | undefined> => {
     // Outside the TUI (print, json, RPC hosts) never pick or create a profile: a dialog would hang the host, and a guess could write into the wrong memory.
     if (ctx.mode !== 'tui') return undefined;
@@ -222,8 +211,7 @@ export default function optchat(pi: ExtensionAPI) {
       const recovered = pendingImport(dir) ? 0 : inbox.recover(memory);
       if (recovered) ctx.ui.notify(`Recovered ${recovered} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
       const children = new Children(memory, ctx.modelRegistry, () => config.subagent, () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}`,
-        deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports,
-          summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => config.compactor, message => usage.compression(message, 'compactor', sessionId)) });
+        deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
       // Reports a crash held back with their unfinished siblings are delivered now, as they are.
       reports = saved.map(s => typeof s === 'string' ? { text: s } : { text: s.text, count: s.count })
@@ -233,20 +221,14 @@ export default function optchat(pi: ExtensionAPI) {
       active = { name, dir, config, memory, inbox, children, usage, unlock }; fault = undefined; idle = () => ctx.isIdle();
       await restoreMain(ctx, active);
       if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); });
-      // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
-      if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await serveWindows(dir, children, () => !stopping && !importing && !pendingImport(dir), deliverReport);
       untitle = children.subscribe(() => showTitle(ctx)); showTitle(ctx);
       status(ctx);
       ctx.ui.notify(`${brand} · ${name} · ${memory.root.length} messages\nCompactor: ${config.compactor.provider}/${config.compactor.model} (${config.compactor.thinking})`, 'info');
       const queuedReports = [...reports];
-      if (!pendingImport(dir)) {
-        const recover = (work: Promise<void>, what: string) => work.catch(error => ctx.ui.notify(`${what}: ${errorText(error)}`, 'error'));
-        // Only an interactive Pi picks cut-off subagents up: a one-shot headless run would stop them again as it exits.
-        recovery = Promise.all([recover(children.recoverHandoffs(), 'Handoff recovery'), ...ctx.mode === 'tui' ? [recover(children.resumeCutOff(), 'Resuming subagents')] : []]).then(() => {});
-      }
+      // Only an interactive Pi picks cut-off subagents up: a one-shot headless run would stop them again as it exits.
+      if (!pendingImport(dir) && ctx.mode === 'tui') recovery = children.resumeCutOff().catch(error => ctx.ui.notify(`Resuming subagents: ${errorText(error)}`, 'error'));
       setImmediate(() => { if (active?.memory === memory && !pendingImport(dir)) for (const r of queuedReports) sendReport(r); });
     } catch (error) {
-      await closeWindows?.(); closeWindows = undefined;
       untitle?.(); untitle = undefined; title.clear();
       if (active && active.memory === openingMemory) {
         unmountNavigation?.(); unmountNavigation = undefined;
@@ -262,58 +244,13 @@ export default function optchat(pi: ExtensionAPI) {
     const entries = ctx.sessionManager.getEntries();
     const saved = entries.findLast(e => e.type === 'custom' && e.customType === binding);
     const boundName = saved?.type === 'custom' && record(saved.data) && typeof saved.data.name === 'string' ? saved.data.name : undefined;
-    // A session with conversation in it belongs to its profile. One that is only bound (a fresh `/optchat profile` session) may still pick another.
-    const settled = boundName !== undefined && entries.some(e => e.type === 'message' || e.type === 'custom_message');
     const flag = pi.getFlag('optchat-profile');
     try {
       if (boundName && typeof flag === 'string' && flag !== boundName) throw new Error(`Session belongs to ${boundName}; cannot resume it as ${flag}.`);
-      const agentId = pi.getFlag('optchat-agent');
-      if (agentId !== undefined) {
-        if (typeof agentId !== 'string' || !agentId.trim()) throw new Error('--optchat-agent requires an exact agent ID');
-        if (ctx.mode !== 'tui') { process.exitCode = 1; throw new Error('--optchat-agent requires interactive Pi (not print, JSON or RPC mode)'); }
-        if (settled) throw new Error('This session already contains a main conversation. Open the agent in a fresh Pi session.');
-        const name = boundName ?? (typeof flag === 'string' ? flag : undefined);
-        if (!name) throw new Error('--optchat-agent needs a profile: pass --optchat-profile');
-        remote = await openConnectedWindow(pi, ctx, name, text => title.show(t => ctx.ui.setTitle(t), text), agentId);
-        fault = undefined;
-        // Pi sets its own title after session_start; retain the attached window title too.
-        for (const ms of [0, 250, 1000]) setTimeout(() => title.reapply(), ms).unref();
-        return;
-      }
-      let name = boundName ?? (typeof flag === 'string' ? flag : await chooseProfile(ctx));
-      for (;;) {
-        if (!name) { status(ctx); return; }
-        try {
-          await openProfile(name, ctx);
-          break;
-        } catch (error) {
-          if (!(error instanceof ProfileBusyError) || ctx.mode !== 'tui') throw error;
-          // A resumed conversation already belongs to this profile, so another profile needs a new session (/optchat profile).
-          // Older owners have no listing protocol. Keep their existing Connect/Back menu rather than failing startup.
-          const listed = settled ? undefined : await listAttachableAgents(profilePath(name)).catch(() => undefined);
-          const agents = listed ?? [];
-          const hint = listed?.length === 0 ? '\nNo background agents are running. Ask the main agent to start one.' : '';
-          const labels = new Map(agents.map(agent => [`Open subagent ${agent.id} · ${agent.state} · ${oneLine(agent.task).slice(0, 80)}`, agent.id]));
-          const choice = await ctx.ui.select(`${name} is open in another window\n${error.owner}${hint}`,
-            [CONNECT, ...labels.keys(), ...(settled ? [] : [BACK])]);
-          const agentId = choice && labels.get(choice);
-          if (agentId) {
-            try {
-              remote = await openConnectedWindow(pi, ctx, name, text => title.show(t => ctx.ui.setTitle(t), text), agentId, true);
-              fault = undefined;
-              // An attached terminal saves no profile binding: its Pi session never persists, so there is nothing to resume.
-              for (const ms of [0, 250, 1000]) setTimeout(() => title.reapply(), ms).unref();
-              return;
-            } catch (error) {
-              ctx.ui.notify(errorText(error), 'error');
-              continue; // It may have finished while the menu was open: refresh, never spawn a replacement.
-            }
-          }
-          if (choice === CONNECT) { remote = await openConnectedWindow(pi, ctx, name, text => title.show(t => ctx.ui.setTitle(t), text)); fault = undefined; break; }
-          if (choice !== BACK) throw error;
-          name = await chooseProfile(ctx);
-        }
-      }
+      const name = boundName ?? (typeof flag === 'string' ? flag : await chooseProfile(ctx));
+      if (!name) { status(ctx); return; }
+      // A profile another Pi holds fails here (ProfileBusyError) like any other profile that cannot open.
+      await openProfile(name, ctx);
       if (name !== boundName) pi.appendEntry(binding, { name });
     } catch (error) {
       if (active) await stop().catch(() => {});
@@ -330,19 +267,15 @@ export default function optchat(pi: ExtensionAPI) {
   // Pi shows nothing when a switch is cancelled, so say why and what lets it through.
   const blockSwitch = (command: string, ctx: ExtensionContext) => {
     const children = active?.children, runs = children?.active ? children.ids.flatMap(id => children.live(id)?.info ?? []) : [];
-    const label = (run: RunInfo) => !isActiveRun(run) ? 'finishing' : run.connected ? 'connected window'
+    const label = (run: RunInfo) => !isActiveRun(run) ? 'finishing'
       : run.state === 'paused' ? 'interrupted, waiting for you' : run.state === 'stopping' ? 'stopping' : 'working';
-    const own = runs.filter(run => !run.connected), it = own.length === 1 ? 'it' : 'them';
-    const how = [
-      ...own.length ? [own.some(run => run.state === 'paused') ? `Open ${it} in /optchat agents and message ${it} to resume, or press Ctrl+X twice to stop.`
-        : `Wait for ${it} to finish, or open ${it} in /optchat agents and press Ctrl+X twice.`] : [],
-      ...runs.length > own.length ? [own.length || runs.length > 1 ? 'A connected window\'s agent ends when its window runs /complete or closes.' : 'It ends when that window runs /complete or closes.'] : [],
-    ];
-    const why = remote && !remote.ended ? 'in a connected window. Run /complete to end this conversation, then open a new Pi window.'
-      : importing ? 'while an import is open. Close the import dialog or pause the import (Escape), then try again.'
+    const it = runs.length === 1 ? 'it' : 'them';
+    const how = runs.some(run => run.state === 'paused') ? `Open ${it} in /optchat agents and message ${it} to resume, or press Ctrl+X twice to stop.`
+      : `Wait for ${it} to finish, or open ${it} in /optchat agents and press Ctrl+X twice.`;
+    const why = importing ? 'while an import is open. Close the import dialog or pause the import (Escape), then try again.'
       : !children?.active ? undefined
       : !runs.length ? 'while agents are starting or finishing. Try again in a moment.'
-      : `while ${runs.length === 1 ? '1 agent is' : `${runs.length} agents are`} active: ${runs.map(run => `${run.id} (${label(run)})`).join(', ')}. ${how.join(' ')}`;
+      : `while ${runs.length === 1 ? '1 agent is' : `${runs.length} agents are`} active: ${runs.map(run => `${run.id} (${label(run)})`).join(', ')}. ${how}`;
     if (!why) return undefined;
     ctx.ui.notify(`${command} is blocked ${why}`, 'warning');
     return { cancel: true };
@@ -350,13 +283,6 @@ export default function optchat(pi: ExtensionAPI) {
   pi.on('session_before_switch', (event, ctx) => blockSwitch(event.reason === 'new' ? '/new' : '/resume', ctx));
   pi.on('session_before_fork', (event, ctx) => blockSwitch(event.position === 'at' ? '/clone' : '/fork', ctx));
   pi.on('input', async (event, ctx) => {
-    if (remote) {
-      try {
-        if (event.images?.length) throw new Error('Connected windows currently accept text only; provide a file path for the agent to read.');
-        await remote.submit(event.text);
-      } catch (error) { ctx.ui.notify(errorText(error), 'error'); ctx.ui.setEditorText(event.text); }
-      return { action: 'handled' };
-    }
     if (!active) {
       // Without a profile or flag, a headless run is plain Pi. A requested profile that failed to open refuses instead of running without memory.
       if (ctx.mode !== 'tui' && !fault) return { action: 'continue' };
@@ -497,7 +423,6 @@ export default function optchat(pi: ExtensionAPI) {
       await checkpoints;
     }
   });
-  registerConnectedRenderer(pi);
   registerReportRenderer(pi);
   const [zoom, date] = memoryTools(() => required().memory, id => required().children.transcript(id));
   pi.registerTool(zoom); pi.registerTool(date);
@@ -552,7 +477,6 @@ export default function optchat(pi: ExtensionAPI) {
   };
   pi.registerShortcut(shortcut, { description: 'Inspect OptChat agents, usage and background activity', handler: ctx => inspect(ctx, 'agents') });
   const command = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
-    if (remote && !remote.ended) { ctx.ui.notify('Manage this profile in its original window. Here use /tell-main or /complete.', 'info'); return; }
     if (importing) throw new Error('Close the import dialog before changing profile settings.');
     let action = args.trim();
     if (!action) {
@@ -605,7 +529,7 @@ export default function optchat(pi: ExtensionAPI) {
     if (ctx.mode !== 'tui' && (named || action === 'profile')) {
       // RPC and SDK hosts (Pi Web) have no picker and may not support ctx.newSession(), so a still-empty session binds in place.
       const first = `Run /optchat profile ${named ?? '<name>'} as the first message of a new session, or start Pi with --optchat-profile <name>.`;
-      if (!named || active || remote || ctx.sessionManager.getEntries().some(e => e.type === 'message' || e.type === 'custom_message')) throw new Error(first);
+      if (!named || active || ctx.sessionManager.getEntries().some(e => e.type === 'message' || e.type === 'custom_message')) throw new Error(first);
       // As with a requested profile: one that fails to open blocks prompts instead of running without memory.
       try { await openProfile(named, ctx); } catch (error) { fault = errorText(error); throw error; }
       pi.appendEntry(binding, { name: named });
@@ -640,14 +564,6 @@ export default function optchat(pi: ExtensionAPI) {
     }
     if (action) throw new Error('Use /optchat [profile|settings|model|agents|usage|activity|instructions|browse|import].');
   };
-  pi.registerCommand('complete', { description: 'End this connected conversation and hand off to the main agent', handler: async (_args, ctx) => {
-    if (!remote) { ctx.ui.notify('/complete is for connected subagent windows.', 'info'); return; }
-    try { await remote.complete(); } catch (error) { ctx.ui.notify(errorText(error), 'error'); }
-  } });
-  pi.registerCommand('tell-main', { description: 'Send a message to the main agent from this connected window', handler: async (args, ctx) => {
-    if (!remote) { ctx.ui.notify('/tell-main is for connected subagent windows.', 'info'); return; }
-    try { await remote.tell(args); } catch (error) { ctx.ui.notify(errorText(error), 'error'); }
-  } });
   pi.registerCommand('optchat', { description: 'OptChat profiles, settings, models, agents, instructions, memory browser, and imports',
     getArgumentCompletions: prefix => ['profile', 'settings', 'model', 'agents', 'agents model', 'usage', 'activity', 'instructions', 'browse', 'import'].filter(s => s.startsWith(prefix)).map(value => ({ value, label: value })),
     handler: async (args, ctx) => { try { await command(args, ctx); } catch (error) { ctx.ui.notify(errorText(error), 'error'); } },

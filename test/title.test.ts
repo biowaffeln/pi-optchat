@@ -7,7 +7,7 @@ import { createAssistantMessageEventStream, type AssistantMessage } from '@earen
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionUIContext } from '@earendil-works/pi-coding-agent';
 import optchat from '../src/index.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
-import { mainTitle, statusState, TabTitle, windowTitle, type StatusState } from '../src/title.ts';
+import { mainTitle, TabTitle } from '../src/title.ts';
 import { COMPACT } from '../src/prompts.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { textContent } from '../src/transcript.ts';
@@ -26,16 +26,6 @@ test('tab titles show the profile, whether the agent is working, and running sub
   assert.equal(mainTitle('personal', true, 0), '● π personal');
   assert.equal(mainTitle('personal', true, 1), '● π personal · 1 agent');
   assert.equal(mainTitle('work', false, 2), 'π work · 2 agents');
-  assert.equal(windowTitle('personal', 'waiting'), '↳ personal');
-  assert.equal(windowTitle('personal', 'working'), '● ↳ personal');
-  assert.equal(windowTitle('personal', 'done'), '↳ personal · done');
-  assert.equal(windowTitle('personal', 'disconnected'), '↳ personal · disconnected');
-  // A status event never ends the conversation; the type keeps callers from expecting `done`/`disconnected`.
-  const live: StatusState = statusState('running');
-  assert.equal(live, 'working');
-  assert.equal(statusState('stopping'), 'working');
-  assert.equal(statusState('waiting', 2), 'working', 'waiting on its own agents is still work');
-  assert.equal(statusState('waiting', 0), 'waiting', 'waiting with no agents means waiting for you');
 });
 
 test('the last title is re-applied after Pi overwrites it, and a stale ctx is ignored', () => {

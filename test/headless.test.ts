@@ -27,7 +27,7 @@ for (const name of ['work', 'personal']) {
 rememberProfile('personal');
 
 /** A headless Pi (print or RPC) whose model answers "OK to: <prompt>" and records what each call was sent. */
-async function headless(mode: 'print' | 'rpc', options: { flag?: string; bound?: string; agent?: string; later?: ExtensionFactory } = {}) {
+async function headless(mode: 'print' | 'rpc', options: { flag?: string; bound?: string; later?: ExtensionFactory } = {}) {
   const dir = mkdtempSync(join(root, 's-'));
   const sent: string[] = [], errors: string[] = [];
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
@@ -53,7 +53,6 @@ async function headless(mode: 'print' | 'rpc', options: { flag?: string; bound?:
   if (options.bound) manager.appendCustomEntry('optchat.profile', { name: options.bound });
   const { session } = await createAgentSession({ modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'), resourceLoader: loader, settingsManager, sessionManager: manager, tools: [] });
   if (options.flag) session.extensionRunner.setFlagValue('optchat-profile', options.flag);
-  if (options.agent !== undefined) session.extensionRunner.setFlagValue('optchat-agent', options.agent);
   // RPC hosts have a real UI, but a dialog there can hang the host (pi-acp), so any select fails the test.
   const notes: string[] = [];
   const uiContext: ExtensionUIContext = { ...session.extensionRunner.getUIContext(), notify: message => { notes.push(message); },
@@ -146,19 +145,4 @@ test('a requested profile that cannot open fails visibly and does not run withou
       } finally { await pi.close(); }
     }
   } finally { await unlock(); }
-});
-
-test('--optchat-agent refuses headless mode without opening a profile or answering locally', async () => {
-  for (const mode of ['print', 'rpc'] as const) {
-    process.exitCode = undefined;
-    const pi = await headless(mode, { flag: 'work', agent: '8ab62e89' });
-    try {
-      assert.equal(pi.errors.length, 1);
-      assert.match(pi.errors[0], /requires interactive Pi/);
-      assert.equal(await pi.ask('Do not run this locally'), undefined);
-      assert.equal(pi.sent.length, 0);
-      assert.deepEqual(pi.bindings(), []);
-      assert.equal(process.exitCode, 1);
-    } finally { await pi.close(); process.exitCode = undefined; }
-  }
 });
