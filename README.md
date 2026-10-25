@@ -121,7 +121,7 @@ Ask in plain words, for example: "Spawn an agent to investigate this repository 
   ```
 
   Each role needs a `description` (shown to the agent); `model`, `thinking`, `tools` (`all` or `readonly`) and `memory` are optional. Edits apply after `/reload`. A role whose model you aren't logged in to fails the spawn rather than running on another model.
-- **Read-only**: `tools: "readonly"` leaves out the `edit` and `write` tools and adds `grep`, `find` and `ls`. Bash and your extensions' tools stay, so this is a strong hint, not a sandbox: a read-only child could still write with bash. The children of a read-only child are read-only too.
+- **Read-only**: `tools: "readonly"` is enforced. The child gets only `read`, `grep`, `find`, `ls`, `bash` and OptChat's own tools (no `edit`, `write`, extension or MCP tools), and its bash runs in a sandbox that denies file writes outside temp directories: `sandbox-exec` on macOS, `bwrap` on Linux. With neither, it gets no bash. The network stays open, so it isn't a full jail. The children of a read-only child are read-only too.
 - **No memory**: `memory: false` gives the child only its task, AGENTS.md files and skills: no memory view, no `zoom` or `date`.
 - **Worktrees**: `isolation: "worktree"` runs the child in its own git worktree, on a new branch `optchat/<id>` from the current HEAD of the repository that holds its directory. When it finishes, its changes are committed on that branch and the worktree is removed; its report names the branch. A child that changed nothing leaves no branch.
 - **Talking**: the parent sends guidance with `tell`; the child messages its parent mid-run with `tell_parent`. `tell` to a finished child resumes it with its saved transcript.

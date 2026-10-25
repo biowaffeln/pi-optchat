@@ -5,7 +5,7 @@ The README covers the basics. This page has the rest.
 ## What a child gets
 
 - The profile's memory view (frozen at launch), its instructions, read-only `zoom`/`date`, and normal coding tools plus your installed extensions (except pi-optchat itself). A task with `memory: false` gets no view and no `zoom`/`date` (see [Memory](#memory)).
-- The Pi built-in extensions the main session loaded: MCP, codemode and tool search.
+- The Pi built-in extensions the main session loaded: MCP, codemode and tool search. Read-only children don't get these (see [Read-only](#read-only)).
 
 ### MCP servers
 
@@ -43,13 +43,32 @@ Built in, used when the profile's `config.json` has no `roles`:
 
 ## Read-only
 
-`tools: "readonly"` leaves Pi's `edit` and `write` tools out of the child and turns on `read`, `grep`, `find` and `ls`. The child is told it is read-only and should report what to change instead.
+`tools: "readonly"` is enforced by the child's tools, not just asked of it:
+
+- **An allowlist of tools.** The child gets Pi's `read`, `grep`, `find`, `ls` and `bash`, plus OptChat's own tools (`zoom`, `date`, `search`, `spawn`, `tell`, `models`, `tell_parent`, as it would otherwise have). Everything else is never registered: no `edit` or `write`, no tools from your extensions (an AST rewrite tool, say), and no MCP, codemode or tool search. These five tools are Pi's own even if an extension defines a tool with the same name.
+- **Bash runs in a sandbox that denies file writes.** On macOS every command runs under `sandbox-exec` with this profile:
+
+  ```
+  (version 1)
+  (allow default)
+  (deny file-write*)
+  (allow file-write*
+    (subpath "/tmp")
+    (subpath "/private/tmp")
+    (subpath "/private/var/folders")
+    (subpath "/dev"))
+  ```
+
+  On Linux it runs under `bwrap` (bubblewrap) when that is on `PATH`: the whole filesystem mounted read-only, a fresh `/dev`, and `/tmp` and `$TMPDIR` writable. The command is passed to the sandbox as a single argument, never pasted into a shell string. Reading, `git log`, `git status`, builds that only read and tests that write only to temp directories work; `echo >`, `sed -i`, `git commit` and package installs fail with "Operation not permitted" (or "Read-only file system" on Linux).
+- **No sandbox, no bash.** Without `sandbox-exec` or `bwrap` (Windows, or Linux without bubblewrap) the child gets no bash at all, and its prompt says so. It never falls back to unsandboxed bash.
+- The children of a read-only child are always read-only, whatever their task says.
 
 What it does not stop:
 
-- **Bash stays**, so a read-only child can still change files with `echo >`, `sed -i`, `git commit` and so on. There is no command filter. Treat read-only as a strong hint that also removes the obvious tools, not as a sandbox.
-- **Extension tools stay.** Pi has no way to tell which extension tools change files, so ones that do (an AST rewrite tool, say) remain available.
-- The children of a read-only child are always read-only, whatever their task says.
+- **The network.** Commands can still reach the internet and local services, so a command could change things elsewhere: push with credentials it can read, call an API, or talk to a local daemon (Docker, say) that writes on its behalf. Likewise, macOS services the command asks to do something (`open`, `osascript`, `launchctl`) run outside the sandbox.
+- **Temp directories stay writable**: `/tmp` and `$TMPDIR` (on macOS that is under `/private/var/folders`, which also holds per-user caches).
+- **Extensions still load.** Their tools are left out, but their event handlers run in the child's process as they do in any Pi session, outside the sandbox. An extension that writes files on its own (a cache, a log) still does.
+- If Pi itself runs inside a sandbox, it may not be allowed to start another one; then every bash command in a read-only child fails, which is safe but not useful.
 
 ## Memory
 
