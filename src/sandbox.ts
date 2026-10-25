@@ -8,11 +8,13 @@ export const READ_ONLY_TOOLS = ['read', 'grep', 'find', 'ls', 'bash'] as const;
 
 /**
  * macOS Seatbelt profile for a read-only child's bash: everything is allowed except writing files, which is allowed again only
- * in the temp directories (TMPDIR lives under /private/var/folders) and /dev, so /dev/null and the terminal still work.
+ * in the temp directories (TMPDIR lives under /private/var/folders) and /dev, so /dev/null and the terminal still work. Apple
+ * events are denied too, so osascript can't ask another app (Finder, Terminal) to write or run something outside the sandbox.
  */
 export const SEATBELT_PROFILE = `(version 1)
 (allow default)
 (deny file-write*)
+(deny appleevent-send)
 (allow file-write*
   (subpath "/tmp")
   (subpath "/private/tmp")

@@ -52,6 +52,7 @@ Built in, used when the profile's `config.json` has no `roles`:
   (version 1)
   (allow default)
   (deny file-write*)
+  (deny appleevent-send)
   (allow file-write*
     (subpath "/tmp")
     (subpath "/private/tmp")
@@ -65,7 +66,7 @@ Built in, used when the profile's `config.json` has no `roles`:
 
 What it does not stop:
 
-- **The network.** Commands can still reach the internet and local services, so a command could change things elsewhere: push with credentials it can read, call an API, or talk to a local daemon (Docker, say) that writes on its behalf. Likewise, macOS services the command asks to do something (`open`, `osascript`, `launchctl`) run outside the sandbox.
+- **The network.** Commands can still reach the internet and local services, so a command could change things elsewhere: push with credentials it can read, call an API, or talk to a local daemon (Docker, say) that writes on its behalf. Likewise, macOS services the command asks to do something (`open`, `launchctl`) run outside the sandbox. Apple events are denied, so `osascript` can't script other apps, but `open` can still launch one.
 - **Temp directories stay writable**: `/tmp` and `$TMPDIR` (on macOS that is under `/private/var/folders`, which also holds per-user caches).
 - **Extensions still load.** Their tools are left out, but their event handlers run in the child's process as they do in any Pi session, outside the sandbox. An extension that writes files on its own (a cache, a log) still does.
 - If Pi itself runs inside a sandbox, it may not be allowed to start another one; then every bash command in a read-only child fails, which is safe but not useful.

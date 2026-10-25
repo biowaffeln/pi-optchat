@@ -227,6 +227,21 @@ test('on macOS a read-only child\'s bash cannot write outside temp directories',
   } finally { rmSync(probe, { force: true }); await children.close(); removeDir(dir); }
 });
 
+test('on macOS a read-only child in its own worktree can still run git, ls and rg there', { skip: process.platform !== 'darwin' && 'macOS only' }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-readonly-worktree-')), path = repo(dir), { children, asked } = await harness(dir);
+  try {
+    const task = 'RUN: git status --short --branch && git log --format=%s -1 && ls && { command -v rg >/dev/null || exit 0; rg -l hello .; }';
+    const [id] = await children.spawn([{ task, cwd: path, tools: 'readonly', isolation: 'worktree' }], dir);
+    await until(() => !children.active);
+    const output = asked.filter(a => a.task === task).at(-1)!.results.join('\n');
+    assert.match(output, new RegExp(`## optchat/${id}`));
+    assert.match(output, /\binit\b/);
+    assert.match(output, /README\.md/);
+    assert.doesNotMatch(output, /Operation not permitted|exit code/);
+    assert.ok(!existsSync(worktreePath(id)) && !branches(path).includes(`optchat/${id}`), 'it changed nothing, so worktree and branch are gone');
+  } finally { await children.close(); removeDir(dir); }
+});
+
 test('with memory off a child gets only its task: no view, no zoom or date, no view doc', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-no-memory-')), { children, asked } = await harness(dir);
   try {

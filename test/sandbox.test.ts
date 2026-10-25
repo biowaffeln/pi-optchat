@@ -37,6 +37,7 @@ test('findSandbox: sandbox-exec on macOS, bwrap on Linux when on PATH, otherwise
       const mac = findSandbox('darwin', '')!;
       assert.equal(mac.kind, 'sandbox-exec');
       assert.deepEqual(mac.argv('/bin/bash', NASTY), ['/usr/bin/sandbox-exec', '-p', SEATBELT_PROFILE, '/bin/bash', '-c', NASTY]);
+      assert.match(SEATBELT_PROFILE, /^\(deny appleevent-send\)$/m, 'osascript can\'t script other apps from inside');
     }
     assert.equal(findSandbox('linux', dir), undefined, 'no bwrap, no sandbox');
     assert.equal(findSandbox('win32', dir), undefined);
