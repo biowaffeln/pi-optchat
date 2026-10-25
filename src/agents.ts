@@ -8,7 +8,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { StringEnum, type Api, type Model } from '@earendil-works/pi-ai';
 import { allowSearch, cutOffChildren, delegation, NO_DELEGATION, READ_ONLY, READ_ONLY_BASH, READ_ONLY_NO_BASH, RESTARTED, SEARCH_DOC, STEERABLE, SUBAGENT, SUBAGENT_NO_MEMORY, TELL_PARENT, VIEW_DOC, worktreeDoc } from './prompts.ts';
 import { DEFAULT_ROLES, TOOL_SETS, type Roles, type ToolSet } from './roles.ts';
-import { createWorktree, discardWorktree, finishWorktree, reopenWorktree, repoOf, type Worktree } from './worktree.ts';
+import { createWorktree, discardWorktree, finishWorktree, reopenWorktree, repoOf, SettleError, type Worktree } from './worktree.ts';
 import { memoryTools, searchTool } from './tools.ts';
 import { findSandbox, READ_ONLY_TOOLS, sandboxedBashTool, type Sandbox } from './sandbox.ts';
 import { VIEW, type Kind, type Memory } from './memory.ts';
@@ -557,7 +557,8 @@ export class Children {
     try { return await finishWorktree(tree, `OptChat subagent ${info.id}${info.role ? ` (${info.role})` : ''}: ${title}`); }
     catch (error) {
       this.warn(`Could not settle the worktree of ${info.id}: ${String(error)}`);
-      return `Its worktree ${tree.path} (branch ${tree.branch}) could not be committed and removed, so it was left as it is: ${error instanceof Error ? error.message : String(error)}`;
+      return error instanceof SettleError ? error.message
+        : `Its worktree ${tree.path} (branch ${tree.branch}) could not be committed and removed, so it was left as it is: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
   /** Sends a run's report to its parent; in a grouped spawn, only once every child of the spawn has one. */

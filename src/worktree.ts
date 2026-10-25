@@ -60,25 +60,59 @@ export async function reopenWorktree(tree: Worktree) {
   else await git(tree.repo, 'worktree', 'add', '-b', tree.branch, tree.path, tree.base);
 }
 
+/** A settle that stopped partway. Its message is the line for the report: what was done, what was left where, and why. */
+export class SettleError extends Error {}
+const reason = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+/**
+ * Why the worktree's changes can't safely be committed on its branch, or undefined when they can: its HEAD must be the branch
+ * itself, with no rebase, merge, cherry-pick or revert under way. Otherwise a commit would land somewhere else, and removing the
+ * worktree and deleting the branch would lose the child's work.
+ */
+async function offBranch(tree: Worktree) {
+  const ref = await git(tree.path, 'symbolic-ref', '-q', 'HEAD').catch(() => undefined);
+  if (!ref) return `its HEAD is detached (at ${await git(tree.path, 'rev-parse', '--short', 'HEAD').catch(() => 'no commit')}) instead of on ${tree.branch}`;
+  if (ref !== `refs/heads/${tree.branch}`) return `it has ${ref.replace(/^refs\/heads\//, '')} checked out instead of ${tree.branch}`;
+  const states = { 'rebase-merge': 'a rebase', 'rebase-apply': 'a rebase', MERGE_HEAD: 'a merge', CHERRY_PICK_HEAD: 'a cherry-pick', REVERT_HEAD: 'a revert' };
+  const paths = (await git(tree.path, 'rev-parse', '--path-format=absolute', ...Object.keys(states).flatMap(name => ['--git-path', name]))).split('\n');
+  const busy = Object.values(states).find((_, i) => existsSync(paths[i]));
+  return busy && `${busy} is in progress in it`;
+}
+
 /**
  * Settles a run's worktree: commits what is left uncommitted on its branch, then removes the worktree. The branch stays when it
- * holds any commit past its base (the child's own commits count too) and is deleted otherwise. Returns a line for the report.
+ * holds any commit past its base (the child's own commits count too) and is deleted otherwise. Returns a line for the report;
+ * a `SettleError` says which step failed and what is left. When the worktree is not on its branch it is left untouched.
  */
 export async function finishWorktree(tree: Worktree, message: string) {
+  const where = `Its worktree ${tree.path} (branch ${tree.branch})`;
   if (existsSync(tree.path)) {
-    await git(tree.path, 'add', '-A');
-    if (!await quietly(tree.path, 'diff', '--cached', '--quiet')) {
-      // Works without a configured identity too; hooks are skipped, since a failing one would strand the worktree.
-      const identity = await quietly(tree.path, 'config', 'user.email') ? [] : ['-c', 'user.name=OptChat', '-c', 'user.email=optchat@localhost'];
-      await git(tree.path, ...identity, 'commit', '--no-verify', '-q', '-m', message);
-    }
+    const why = await offBranch(tree);
+    if (why) throw new SettleError(`${where} was left as it is, with nothing committed, because ${why}.`);
+    try {
+      await git(tree.path, 'add', '-A');
+      if (!await quietly(tree.path, 'diff', '--cached', '--quiet')) {
+        // Works without a configured identity too; hooks are skipped, since a failing one would strand the worktree.
+        const identity = await quietly(tree.path, 'config', 'user.email') ? [] : ['-c', 'user.name=OptChat', '-c', 'user.email=optchat@localhost'];
+        await git(tree.path, ...identity, 'commit', '--no-verify', '-q', '-m', message);
+      }
+    } catch (error) { throw new SettleError(`${where} could not be committed, so it was left as it is: ${reason(error)}`); }
   }
-  const branch = await quietly(tree.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${tree.branch}`);
-  const commits = branch ? Number(await git(tree.repo, 'rev-list', '--count', `${tree.base}..${tree.branch}`)) : 0;
-  if (existsSync(tree.path)) await git(tree.repo, 'worktree', 'remove', '--force', tree.path);
-  else await quietly(tree.repo, 'worktree', 'prune');
-  if (commits > 0) return `Its changes are on branch ${tree.branch} in ${tree.repo} (${commits} commit${commits === 1 ? '' : 's'} past ${tree.base.slice(0, 7)}); its worktree was removed.`;
-  if (branch) await git(tree.repo, 'branch', '-D', tree.branch);
+  let branch: boolean, commits: number;
+  try {
+    branch = await quietly(tree.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${tree.branch}`);
+    commits = branch ? Number(await git(tree.repo, 'rev-list', '--count', `${tree.base}..${tree.branch}`)) : 0;
+  } catch (error) { throw new SettleError(`${where} was left in place, since its branch could not be read: ${reason(error)}`); }
+  const kept = commits > 0 ? `Its changes are on branch ${tree.branch} in ${tree.repo} (${commits} commit${commits === 1 ? '' : 's'} past ${tree.base.slice(0, 7)})` : '';
+  try {
+    if (existsSync(tree.path)) await git(tree.repo, 'worktree', 'remove', '--force', tree.path);
+    else await quietly(tree.repo, 'worktree', 'prune');
+  } catch (error) { throw new SettleError(`${kept ? `${kept}, but its` : 'Its'} worktree ${tree.path} could not be removed: ${reason(error)}`); }
+  if (kept) return `${kept}; its worktree was removed.`;
+  if (branch) {
+    try { await git(tree.repo, 'branch', '-D', tree.branch); }
+    catch (error) { throw new SettleError(`It changed no files, so its worktree was removed, but its empty branch ${tree.branch} could not be deleted: ${reason(error)}`); }
+  }
   return `It changed no files, so its worktree and branch ${tree.branch} were removed.`;
 }
 
