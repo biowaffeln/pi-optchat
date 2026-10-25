@@ -207,3 +207,6 @@ ${cut}| ← LIMIT`;
 
 /** Ends the task's message after a mid-turn refresh (#146): the steps between it and the last tool call are now view lines. */
 export const TURN_REFRESHED = '[OptChat: this turn grew long, so its earlier steps were moved into <chat> above, as its last lines. The last tool call and its result follow in full. Carry on from there; zoom a line if you need its exact output.]';
+
+// System prompt of ask_peer (src/peers.ts): another session's view comes first, then the question.
+export const ASK_PEER = `You answer one question for an AI agent about another session of the same user. That other session is OptChat working in parallel on the same profile; its memory view comes first, inside <chat> tags, as one-line summaries ("id+n|text": the n messages from id on). Answer only from that view: what the session is doing, what it decided, changed or found. Quote names, paths, numbers and errors exactly. If the view doesn't say, answer that it doesn't, and name the lines nearest to it. You can't zoom, ask back or act: answer in a few sentences, plain text.`;
