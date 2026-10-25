@@ -79,6 +79,23 @@ test('a worktree whose HEAD left its branch, or with a merge under way, is left 
   } finally { removeDir(dir); }
 });
 
+test('settling commits without signing or hooks, and making a worktree runs no hooks either', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-wt-signing-')), path = repo(dir), marker = join(dir, 'hook-ran');
+  try {
+    // Signing that can only fail, and hooks that would leave a mark (and fail).
+    git(path, 'config', 'commit.gpgsign', 'true'); git(path, 'config', 'gpg.program', join(dir, 'no-such-gpg'));
+    mkdirSync(join(path, '.git', 'hooks'), { recursive: true });
+    for (const hook of ['post-checkout', 'post-commit', 'pre-commit']) writeFileSync(join(path, '.git', 'hooks', hook), `#!/bin/sh\necho ${hook} >> '${marker}'\nexit 1\n`, { mode: 0o755 });
+    const { tree } = await createWorktree(path, id());
+    writeFileSync(join(tree.path, 'made.txt'), 'made\n');
+    assert.match(await finishWorktree(tree, 'signed?'), /1 commit past/);
+    assert.equal(git(path, 'show', `${tree.branch}:made.txt`), 'made');
+    await reopenWorktree(tree);
+    await finishWorktree(tree, 'again');
+    assert.ok(!existsSync(marker), 'no hook ran');
+  } finally { removeDir(dir); }
+});
+
 test('when only the empty branch can\'t be deleted, the report says the worktree is gone and the branch is not', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-wt-branch-')), path = repo(dir);
   try {

@@ -16,6 +16,8 @@ async function git(cwd: string, ...args: string[]) {
   }
 }
 const quietly = async (cwd: string, ...args: string[]) => { try { await git(cwd, ...args); return true; } catch { return false; } };
+/** No hooks (a post-checkout or post-commit one could fail or hang with no one to answer it). */
+const NO_HOOKS = ['-c', 'core.hooksPath=/dev/null'];
 
 /**
  * The repository that holds `dir`, the HEAD commit of the checkout `dir` is in, and where `dir` sits inside that checkout
@@ -46,7 +48,7 @@ export const worktreePath = (id: string) => join(dataHome(), 'worktrees', id);
 export async function createWorktree(dir: string, id: string): Promise<{ tree: Worktree; cwd: string }> {
   const { repo, head, prefix } = await repoOf(dir), path = worktreePath(id), branch = `optchat/${id}`;
   mkdirSync(join(dataHome(), 'worktrees'), { recursive: true, mode: 0o700 });
-  await git(repo, 'worktree', 'add', '-b', branch, path, head);
+  await git(repo, ...NO_HOOKS, 'worktree', 'add', '-b', branch, path, head);
   return { tree: { repo, path, branch, base: head }, cwd: prefix ? join(path, prefix) : path };
 }
 
@@ -56,8 +58,8 @@ export async function reopenWorktree(tree: Worktree) {
   if (!existsSync(tree.repo)) throw new Error(`its repository ${tree.repo} no longer exists`);
   await quietly(tree.repo, 'worktree', 'prune');
   mkdirSync(join(dataHome(), 'worktrees'), { recursive: true, mode: 0o700 });
-  if (await quietly(tree.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${tree.branch}`)) await git(tree.repo, 'worktree', 'add', tree.path, tree.branch);
-  else await git(tree.repo, 'worktree', 'add', '-b', tree.branch, tree.path, tree.base);
+  if (await quietly(tree.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${tree.branch}`)) await git(tree.repo, ...NO_HOOKS, 'worktree', 'add', tree.path, tree.branch);
+  else await git(tree.repo, ...NO_HOOKS, 'worktree', 'add', '-b', tree.branch, tree.path, tree.base);
 }
 
 /** A settle that stopped partway. Its message is the line for the report: what was done, what was left where, and why. */
@@ -92,9 +94,10 @@ export async function finishWorktree(tree: Worktree, message: string) {
     try {
       await git(tree.path, 'add', '-A');
       if (!await quietly(tree.path, 'diff', '--cached', '--quiet')) {
-        // Works without a configured identity too; hooks are skipped, since a failing one would strand the worktree.
+        // Works without a configured identity too. Hooks and signing are skipped: a failing hook, or a signer that wants a
+        // passphrase with no terminal to ask on, would strand the worktree on every settle.
         const identity = await quietly(tree.path, 'config', 'user.email') ? [] : ['-c', 'user.name=OptChat', '-c', 'user.email=optchat@localhost'];
-        await git(tree.path, ...identity, 'commit', '--no-verify', '-q', '-m', message);
+        await git(tree.path, ...identity, ...NO_HOOKS, '-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-q', '-m', message);
       }
     } catch (error) { throw new SettleError(`${where} could not be committed, so it was left as it is: ${reason(error)}`); }
   }
