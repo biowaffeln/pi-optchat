@@ -76,10 +76,13 @@ async function harness(dir: string, roles?: Roles, sandbox?: () => Sandbox | und
     },
   });
   const reports: string[] = [];
+  /** Set to make every session open fail, as a broken extension would. */
+  const control = { failOpen: false };
   const make = () => new Children(new Memory(join(dir, 'profile'), async input => input.source.slice(0, 100), () => {}), new ModelRegistry(runtime),
     () => ({ provider: 'optchat-test', model: 'child', thinking: 'off' }), () => '', async text => { reports.push(text); }, () => {}, join(dir, 'profile'),
-    { settings: () => ({ subagentLevels: 2, maxAgents: 8 }), roles: roles && (() => roles), sandbox, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
-  return { asked, reports, make, children: make() };
+    { settings: () => ({ subagentLevels: 2, maxAgents: 8 }), roles: roles && (() => roles), sandbox,
+      createSession: options => control.failOpen ? Promise.reject(new Error('session failed to open')) : createAgentSession({ ...options, modelRuntime: runtime }) });
+  return { asked, reports, make, control, children: make() };
 }
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -318,6 +321,23 @@ test('a cwd that is untracked in the repository fails the spawn up front and lea
     assert.deepEqual(branches(path), ['main']);
     assert.equal(git(path, 'worktree', 'list', '--porcelain').split('\n').filter(l => l.startsWith('worktree ')).length, 1);
     assert.equal(children.history.records.size, 0);
+  } finally { await children.close(); removeDir(dir); }
+});
+
+test('a resume that fails after its worktree came back removes the worktree again and keeps the branch', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-worktree-resume-fail-')), path = repo(dir), { children, control } = await harness(dir);
+  try {
+    const [id] = await children.spawn([{ task: 'RUN: echo one > one.txt', cwd: path, isolation: 'worktree' }], dir);
+    await until(() => !children.active);
+    control.failOpen = true;
+    await assert.rejects(children.tell(id, 'Again.'), /session failed to open/);
+    assert.ok(!existsSync(worktreePath(id)), 'the reopened worktree is gone');
+    assert.equal(git(path, 'worktree', 'list', '--porcelain').split('\n').filter(l => l.startsWith('worktree ')).length, 1);
+    assert.equal(git(path, 'show', `optchat/${id}:one.txt`), 'one', 'the branch and its work stay');
+    control.failOpen = false;
+    await children.tell(id, 'RUN: echo two > two.txt');
+    await until(() => !children.active);
+    assert.equal(git(path, 'show', `optchat/${id}:two.txt`), 'two', 'and a later resume still works');
   } finally { await children.close(); removeDir(dir); }
 });
 

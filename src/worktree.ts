@@ -52,14 +52,23 @@ export async function createWorktree(dir: string, id: string): Promise<{ tree: W
   return { tree: { repo, path, branch, base: head }, cwd: prefix ? join(path, prefix) : path };
 }
 
-/** Brings back a worktree that was removed when its run settled, for a resumed run: from its branch, or its base if the branch is gone. */
+/**
+ * Brings back a worktree that was removed when its run settled, for a resumed run: from its branch, or its base if the branch is
+ * gone. True when it made the worktree, false when it was still there.
+ */
 export async function reopenWorktree(tree: Worktree) {
-  if (existsSync(tree.path)) return;
+  if (existsSync(tree.path)) return false;
   if (!existsSync(tree.repo)) throw new Error(`its repository ${tree.repo} no longer exists`);
   await quietly(tree.repo, 'worktree', 'prune');
   mkdirSync(join(dataHome(), 'worktrees'), { recursive: true, mode: 0o700 });
   if (await quietly(tree.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${tree.branch}`)) await git(tree.repo, ...NO_HOOKS, 'worktree', 'add', tree.path, tree.branch);
   else await git(tree.repo, ...NO_HOOKS, 'worktree', 'add', '-b', tree.branch, tree.path, tree.base);
+  return true;
+}
+
+/** Removes a worktree reopened for a resume that then failed. Its branch stays: it holds the run's earlier work. */
+export async function closeWorktree(tree: Worktree) {
+  if (!await quietly(tree.repo, 'worktree', 'remove', '--force', tree.path)) await quietly(tree.repo, 'worktree', 'prune');
 }
 
 /** A settle that stopped partway. Its message is the line for the report: what was done, what was left where, and why. */

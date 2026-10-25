@@ -8,7 +8,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { StringEnum, type Api, type Model } from '@earendil-works/pi-ai';
 import { allowSearch, cutOffChildren, delegation, NO_DELEGATION, READ_ONLY, READ_ONLY_BASH, READ_ONLY_NO_BASH, RESTARTED, SEARCH_DOC, STEERABLE, SUBAGENT, SUBAGENT_NO_MEMORY, TELL_PARENT, VIEW_DOC, worktreeDoc } from './prompts.ts';
 import { DEFAULT_ROLES, TOOL_SETS, type Roles, type ToolSet } from './roles.ts';
-import { createWorktree, discardWorktree, finishWorktree, reopenWorktree, repoOf, SettleError, type Worktree } from './worktree.ts';
+import { closeWorktree, createWorktree, discardWorktree, finishWorktree, reopenWorktree, repoOf, SettleError, type Worktree } from './worktree.ts';
 import { memoryTools, searchTool } from './tools.ts';
 import { findSandbox, READ_ONLY_TOOLS, sandboxedBashTool, type Sandbox } from './sandbox.ts';
 import { VIEW, type Kind, type Memory } from './memory.ts';
@@ -675,17 +675,18 @@ export class Children {
     const model = this.find(run.model);
     if (!model) throw new Error(`${id}'s model ${run.model} is not available, so it cannot be resumed. Spawn a fresh subagent instead.`);
     // A worktree is removed when its run settles; resuming the run brings it back on the same branch.
+    let reopened = false;
     if (run.worktree) {
       this.resuming.add(id); // A second tell meanwhile is told it is still finishing.
-      try { await reopenWorktree(run.worktree); }
+      try { reopened = await reopenWorktree(run.worktree); }
       catch (error) { throw new Error(`${id}'s worktree could not be restored (${error instanceof Error ? error.message : String(error)}), so it cannot be resumed. Spawn a fresh subagent instead.`); }
       finally { this.resuming.delete(id); }
-      if (this.closing) throw new Error('Profile is closing.');
     }
-    if (!existsSync(run.cwd) || !statSync(run.cwd).isDirectory()) throw new Error(`${id}'s directory ${run.cwd} no longer exists, so it cannot be resumed. Spawn a fresh subagent instead.`);
     this.launching++; this.resuming.add(id);
-    let reserved = true;
+    let reserved = true, started = false;
     try {
+      if (run.worktree && this.closing) throw new Error('Profile is closing.');
+      if (!existsSync(run.cwd) || !statSync(run.cwd).isDirectory()) throw new Error(`${id}'s directory ${run.cwd} no longer exists, so it cannot be resumed. Spawn a fresh subagent instead.`);
       // No thinking level: the session restores the one it ran with.
       // Runs saved before these options existed had all tools and memory on.
       const session = await this.open({ id, directory: run.cwd, depth: run.depth, parentId: run.parentId, model, sessionManager: manager,
@@ -710,6 +711,12 @@ export class Children {
         .finally(() => { this.completions.delete(work); this.changed(); });
       this.completions.add(work);
       live.completion = work;
+      started = true;
+    } catch (error) {
+      // A worktree brought back for this resume goes again, keeping its branch and the run's work on it. One that was still
+      // there (a cut-off run's, with uncommitted work) is left as it is.
+      if (reopened && !started) await closeWorktree(run.worktree!);
+      throw error;
     } finally { if (reserved) this.launching--; this.resuming.delete(id); }
     this.changed();
     return `${id} had finished, so I resumed it with its earlier conversation. Its new report will come back on its own.`;
