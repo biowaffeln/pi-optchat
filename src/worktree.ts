@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, realpathSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { dataHome } from './profiles.ts';
 
@@ -17,31 +17,37 @@ async function git(cwd: string, ...args: string[]) {
 }
 const quietly = async (cwd: string, ...args: string[]) => { try { await git(cwd, ...args); return true; } catch { return false; } };
 
-/** The repository that holds `dir` and its HEAD commit; throws a plain message when there is none. */
+/**
+ * The repository that holds `dir`, the HEAD commit of the checkout `dir` is in, and where `dir` sits inside that checkout
+ * (`prefix`, empty at its top). `repo` is the main repository even when `dir` is in a linked worktree, so it outlives that
+ * worktree: the main working tree for a normal repository, the git directory itself for a bare one (or one kept elsewhere).
+ * Throws a plain message when there is no repository or no commit.
+ */
 export async function repoOf(dir: string) {
-  let repo: string;
-  try { repo = await git(dir, 'rev-parse', '--show-toplevel'); }
-  catch { throw new Error(`isolation "worktree" needs a git repository, and ${dir} is not inside one.`); }
+  let top: string, common: string, prefix: string;
+  try {
+    top = await git(dir, 'rev-parse', '--show-toplevel');
+    common = await git(dir, 'rev-parse', '--path-format=absolute', '--git-common-dir');
+    prefix = (await git(dir, 'rev-parse', '--show-prefix')).replace(/\/$/, '');
+  } catch { throw new Error(`isolation "worktree" needs a git repository, and ${dir} is not inside one.`); }
+  const repo = basename(common) === '.git' && existsSync(dirname(common)) ? dirname(common) : common;
   let head: string;
-  try { head = await git(repo, 'rev-parse', '--verify', 'HEAD^{commit}'); }
-  catch { throw new Error(`isolation "worktree" needs a commit to start from, and ${repo} has none yet.`); }
-  return { repo, head };
+  try { head = await git(dir, 'rev-parse', '--verify', 'HEAD^{commit}'); }
+  catch { throw new Error(`isolation "worktree" needs a commit to start from, and ${top} has none yet.`); }
+  return { repo, head, prefix };
 }
 
 /** Where worktrees live: outside every repository, beside the profiles. */
 export const worktreePath = (id: string) => join(dataHome(), 'worktrees', id);
-/** The directory inside `tree` that matches `dir` inside `tree.repo`, so a task started in a subdirectory starts there again. */
-export function workingDirectory(tree: Worktree, dir: string) {
-  const inside = relative(realpathSync(tree.repo), realpathSync(dir));
-  return inside && !inside.startsWith('..') ? join(tree.path, inside) : tree.path;
-}
-
-/** A new worktree on branch `optchat/<id>` from the HEAD of the repository holding `dir`. */
-export async function createWorktree(dir: string, id: string): Promise<Worktree> {
-  const { repo, head } = await repoOf(dir), path = worktreePath(id), branch = `optchat/${id}`;
+/**
+ * A new worktree on branch `optchat/<id>` from the HEAD of the checkout holding `dir`, and `cwd`, the directory in it that
+ * matches `dir`, so a task started in a subdirectory starts there again.
+ */
+export async function createWorktree(dir: string, id: string): Promise<{ tree: Worktree; cwd: string }> {
+  const { repo, head, prefix } = await repoOf(dir), path = worktreePath(id), branch = `optchat/${id}`;
   mkdirSync(join(dataHome(), 'worktrees'), { recursive: true, mode: 0o700 });
   await git(repo, 'worktree', 'add', '-b', branch, path, head);
-  return { repo, path, branch, base: head };
+  return { tree: { repo, path, branch, base: head }, cwd: prefix ? join(path, prefix) : path };
 }
 
 /** Brings back a worktree that was removed when its run settled, for a resumed run: from its branch, or its base if the branch is gone. */

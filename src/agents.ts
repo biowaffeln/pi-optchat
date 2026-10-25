@@ -8,7 +8,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { StringEnum, type Api, type Model } from '@earendil-works/pi-ai';
 import { allowSearch, cutOffChildren, delegation, NO_DELEGATION, READ_ONLY, READ_ONLY_BASH, READ_ONLY_NO_BASH, RESTARTED, SEARCH_DOC, STEERABLE, SUBAGENT, SUBAGENT_NO_MEMORY, TELL_PARENT, VIEW_DOC, worktreeDoc } from './prompts.ts';
 import { DEFAULT_ROLES, TOOL_SETS, type Roles, type ToolSet } from './roles.ts';
-import { createWorktree, discardWorktree, finishWorktree, reopenWorktree, repoOf, workingDirectory, type Worktree } from './worktree.ts';
+import { createWorktree, discardWorktree, finishWorktree, reopenWorktree, repoOf, type Worktree } from './worktree.ts';
 import { memoryTools, searchTool } from './tools.ts';
 import { findSandbox, READ_ONLY_TOOLS, sandboxedBashTool, type Sandbox } from './sandbox.ts';
 import { VIEW, type Kind, type Memory } from './memory.ts';
@@ -329,8 +329,8 @@ export class Children {
         signal?.throwIfAborted();
         if (cancelled()) throw new Error('Parent or profile is stopping.');
         const id = randomUUID().slice(0, 8), asked = taskDirectory(cwd, task.cwd);
-        const worktree = task.isolation === 'worktree' ? await createWorktree(asked, id) : undefined;
-        const directory = worktree ? workingDirectory(worktree, asked) : asked;
+        const made = task.isolation === 'worktree' ? await createWorktree(asked, id) : undefined;
+        const worktree = made?.tree, directory = made ? made.cwd : asked;
         let session: AgentSession;
         try {
           session = await this.open({ id, directory, depth, parentId, model: task.model, thinking: task.thinking, tools: task.tools, memory: task.memory, worktree,
