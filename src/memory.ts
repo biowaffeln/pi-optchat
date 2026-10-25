@@ -11,7 +11,8 @@ export const PAGE = 25_000;
 export const KINDS = ['user', 'talk', 'tool', 'echo', 'note', 'work'] as const;
 export type Kind = typeof KINDS[number];
 export interface Origin { source: 'claude' | 'claude-memory' | 'codex' | 'pi' | 'chatgpt'; conversation: string; message: string; title: string; project?: string }
-export interface Entry { i: number; kind: Kind; text: string; size: number; date: string; receipt?: string; origin?: Origin }
+/** `branch`: the session a merged message came from, and its index there (see src/branch.ts). */
+export interface Entry { i: number; kind: Kind; text: string; size: number; date: string; receipt?: string; origin?: Origin; branch?: { id: string; i: number } }
 export interface Part { l: number; i: number }
 export interface Summary extends Part { text: string; size: number }
 /** `part` is the node to build: a message's leaf, or the merge of its two halves. `call` is the tool call a tool result's leaf
@@ -61,6 +62,8 @@ class Sawtooth {
   readonly parts: Part[] = [];
   private measured = 0;
   merging = false;
+  /** Batches started since this view was opened: each rewrites the view, so its cached prefix is gone. */
+  batches = 0;
   constructor(private readonly high: number, private readonly low: number, private readonly node: (part: Part) => Summary | undefined) {}
   private lineSize(part: Part) { return bytes(`${start(part)}+${2 ** part.l}|\n`) + (this.node(part)?.size ?? UNBUILT_BYTES); }
   get size() { return VIEW_FRAME_BYTES + this.measured + (this.parts.length ? 0 : 1); } // render() keeps a blank line in an empty view.
@@ -79,7 +82,7 @@ class Sawtooth {
   /** Returns whether any lines merged. */
   fit(total: number, force = false) {
     const lines = this.parts.length;
-    if (force || this.size > this.high) this.merging = true;
+    if ((force || this.size > this.high) && !this.merging) { this.merging = true; this.batches++; }
     for (let best: number; this.merging && this.size > this.low && (best = mostDue(this.parts, total, part => !!this.node(part))) >= 0;) {
       const a = this.parts[best], b = this.parts[best + 1], parent = { l: a.l + 1, i: a.i / 2 };
       this.measured += this.lineSize(parent) - this.lineSize(a) - this.lineSize(b);
@@ -238,6 +241,8 @@ export class Memory {
   get pending() { return this.unbuilt.size; }
   get active() { return this.busy.size; }
   get size() { return this.chat.size; }
+  /** Batch merges the chat's view has started since this memory opened. */
+  get batches() { return this.chat.batches; }
   /** Summaries built out of the backlog since it was last empty, and when the next failed one is retried. */
   progress(now = Date.now()) {
     const due = Math.min(...[...this.retryAt.values()].filter(t => t > now));
