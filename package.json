@@ -5,8 +5,7 @@
   "pi": {
     "extensions": [
       "./src/index.ts"
-    ],
-    "image": "https://raw.githubusercontent.com/jonaslsaa/pi-optchat/main/docs/banner.jpg"
+    ]
   },
   "scripts": {
     "check": "tsc --noEmit",
@@ -43,11 +42,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jonaslsaa/pi-optchat.git"
+    "url": "git+https://github.com/biowaffeln/pi-optchat.git"
   },
-  "homepage": "https://github.com/jonaslsaa/pi-optchat#readme",
+  "homepage": "https://github.com/biowaffeln/pi-optchat#readme",
   "bugs": {
-    "url": "https://github.com/jonaslsaa/pi-optchat/issues"
+    "url": "https://github.com/biowaffeln/pi-optchat/issues"
   },
   "engines": {
     "node": ">=22.19.0"

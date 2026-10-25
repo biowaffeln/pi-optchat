@@ -1,31 +1,38 @@
-![Pi-OptChat: persistent memory for Pi](https://raw.githubusercontent.com/jonaslsaa/pi-optchat/main/docs/banner.jpg)
+# pi-optchat (biowaffeln fork)
 
-# pi-optchat
+A fork of [jonaslsaa/pi-optchat](https://github.com/jonaslsaa/pi-optchat), a Pi extension that gives you one endless chat per profile, remembered through a summary tree instead of compaction. It implements [Victor Taelin's OptChat recipe](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449).
 
-A Pi extension that gives you one endless chat per profile, remembered through a summary tree instead of compaction. It implements [Victor Taelin's OptChat recipe](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449).
+This fork goes its own way and doesn't track upstream. What it adds:
+
+- **Sessions as branches**: open the same profile in as many Pi windows as you like. Each is a full chat that starts from the profile's shared memory and merges back into it when it closes or goes idle.
+- **Peers**: open sessions can see each other, ask about each other's work, and leave each other short notes.
+- **Subagent roles and options**: role presets, subagents without memory, enforced read-only with a sandboxed bash, and git worktree isolation.
+
+Changes are listed in the [releases](https://github.com/biowaffeln/pi-optchat/releases).
+
+Everything else comes from upstream:
 
 - **Memory**: every message is kept, and each turn starts from a fresh context holding a bounded view of everything so far.
 - **Profiles**: separate memories and instructions, such as `work` and `personal`.
 - **Subagents**: delegate tasks to background agents, watch them live, and send them guidance.
 - **Import**: bring in history from Claude Code (conversations and memories), Codex, Pi and [OMP](https://github.com/can1357/oh-my-pi), or ChatGPT.
-- **Sessions as branches**: open the same profile in as many Pi windows as you like. Each is a full chat that starts from the profile's shared memory and merges back into it when it closes or goes idle.
 
-It runs inside ordinary Pi, with no fork or separate launcher.
+It runs inside ordinary Pi, with no separate launcher.
 
 ## Install
 
 ```sh
-pi install npm:pi-optchat
+pi install git:github.com/biowaffeln/pi-optchat@v0.11.0
 pi install npm:pi-web-access   # optional, for web search and page fetching
 ```
 
-Or from GitHub: `pi install git:github.com/jonaslsaa/pi-optchat`.
+The tag pins the version, so `pi update` won't move it; install a newer tag to upgrade.
 
 Requirements: Pi 1.0.2 or compatible, Node.js 22.19+, and Git. Tested on macOS; the offline tests also run on Linux and Windows.
 
 Web access is not bundled. Subagents load the Pi extensions you have installed (except pi-optchat itself), so installing `pi-web-access` gives web tools to the main agent and every subagent.
 
-To uninstall, run `pi remove git:github.com/jonaslsaa/pi-optchat`. Profile data is kept.
+To uninstall, run `pi remove git:github.com/biowaffeln/pi-optchat@v0.11.0`. Profile data is kept.
 
 ## Quick start
 
@@ -266,7 +273,7 @@ OptChat keeps the recipe's numbers: 512-byte lines, binary merges, the 128,000 â
 ## Development
 
 ```sh
-git clone https://github.com/jonaslsaa/pi-optchat.git
+git clone https://github.com/biowaffeln/pi-optchat.git
 cd pi-optchat
 npm ci --ignore-scripts
 pi install .
