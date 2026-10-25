@@ -192,7 +192,7 @@ export async function mergeBranch(profile: string, dir: string, info: BranchInfo
       append(kind, text, date, { ...receipt ? { receipt } : {}, ...origin ? { origin } : {}, branch: { id: info.id, i } });
       mapped.set(i, at - 1);
     }
-    if (reason === 'interrupted') append('note', `Branch ${info.id} (in ${info.cwd}) ended without closing: its Pi crashed or was killed, so its last turn may be unfinished.`, new Date().toISOString());
+    if (reason === 'interrupted' && pending.length) append('note', `Branch ${info.id} (in ${info.cwd}) ended without closing: its Pi crashed or was killed, so its last turn may be unfinished.`, new Date().toISOString());
     // A node moves with its messages when all of them moved by the same shift, and that shift is a multiple of its size.
     const have = new Set(trunk.saved.tree.flatMap(n => record(n) && Number.isSafeInteger(n.l) && Number.isSafeInteger(n.i) ? [key({ l: Number(n.l), i: Number(n.i) })] : []));
     const shift = (j: number) => j < info.base ? 0 : mapped.get(j) === undefined ? undefined : mapped.get(j)! - j;
@@ -230,13 +230,18 @@ export function closeInfo(dir: string, info: BranchInfo) { info.closed = new Dat
  * reports they journaled but never logged are logged first, so nothing typed is lost. Returns the ids it merged. */
 export async function recoverBranches(profile: string, warn: (text: string) => void = console.error) {
   const recovered: string[] = [];
-  for (const info of listBranches(profile)) {
-    if (info.closed) continue;
-    const dir = branchDirectory(profile, info.id);
+  for (const listed of listBranches(profile)) {
+    if (listed.closed) continue;
+    // A lock only proves something about processes on this machine: a branch another host runs (a shared folder) is left to it.
+    if (listed.host !== hostname()) { warn(`Branch ${listed.id} runs on ${listed.host}; only a Pi there can merge it if it crashed.`); continue; }
+    const dir = branchDirectory(profile, listed.id);
     let release: (() => Promise<void>) | undefined;
     // Taking its lock both proves its process is gone and keeps another Pi from recovering it at the same time.
-    try { release = await takeLock(liveLock(dir), describe(`recovering branch ${info.id}`)); } catch { continue; }
+    try { release = await takeLock(liveLock(dir), describe(`recovering branch ${listed.id}`)); } catch { continue; }
     try {
+      // It may have closed between the listing and the lock.
+      const info = readInfo(dir);
+      if (!info || info.closed) continue;
       const store = new BranchStore(profile, dir, info.base, warn), saved = await store.load();
       const entries = saved.entries.filter(isEntry).sort((a, b) => a.i - b.i);
       let next = entries.length;
@@ -255,14 +260,17 @@ export async function recoverBranches(profile: string, warn: (text: string) => v
       for (const name of ['pending-inputs.json', 'pending-reports.json']) if (existsSync(join(dir, name))) writeFileSync(join(dir, name), '[]');
       closeInfo(dir, info);
       recovered.push(info.id);
-    } catch (error) { warn(`Could not recover branch ${info.id}: ${error instanceof Error ? error.message : String(error)}`); }
+    } catch (error) { warn(`Could not recover branch ${listed.id}: ${error instanceof Error ? error.message : String(error)}`); }
     finally { await release(); }
   }
   return recovered;
 }
+/** A journal's items. One that can't be read stops the recovery instead of being taken as empty, so nothing in it is lost. */
 function journal(file: string): Record<string, unknown>[] {
-  try { const value: unknown = JSON.parse(readFileSync(file, 'utf8')); return Array.isArray(value) ? value.map(v => record(v) ? v : { text: String(v) }) : []; }
-  catch { return []; }
+  if (!existsSync(file)) return [];
+  const value: unknown = JSON.parse(readFileSync(file, 'utf8'));
+  if (!Array.isArray(value)) throw new Error(`${file} is not a list.`);
+  return value.map(v => record(v) ? v : { text: String(v) });
 }
 const isNode = (value: unknown): value is Summary => record(value) && Number.isSafeInteger(value.l) && Number.isSafeInteger(value.i) && typeof value.text === 'string';
 

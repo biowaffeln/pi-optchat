@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { join } from 'node:path';
 import { Memory, end, start, type Compression, type Entry } from '../src/memory.ts';
 import { FileStore } from '../src/store.ts';
-import { closeInfo, liveLock, liveStatus, listBranches, mergeBranch, openBranchMemory, readInfo, recoverBranches, resetBranch, startBranch, trunkState } from '../src/branch.ts';
+import { closeInfo, liveLock, liveStatus, listBranches, mergeBranch, openBranchMemory, readInfo, recoverBranches, resetBranch, saveInfo, startBranch, trunkState } from '../src/branch.ts';
 import { holder, lockPath, takeLock, LockBusy, waitLock } from '../src/locks.ts';
 
 // Short paths: lock sockets have a ~103-byte limit on macOS.
@@ -202,4 +202,42 @@ test('a new session takes over the runs of closed sessions (the first one also t
       assert.deepEqual(readdirSync(join(profile, 'runs')), []);
     } finally { await next.memory.close(); await next.release(); }
   } finally { await open.memory.close(); await open.release(); }
+});
+
+test('recovery leaves alone a branch that closed while it waited, one from another host, and one whose journal it cannot read', async () => {
+  const profile = home();
+  await trunkWith(profile, 2);
+  // Listed as open, then closed normally before recovery got its lock: no "ended without closing" note.
+  const a = await branch(profile);
+  a.memory.append('user', 'said in a'); await a.memory.close();
+  await mergeBranch(profile, a.dir, a.info, a.memory.root, a.memory.tree.values(), 'close', silent);
+  const stale = { ...a.info };
+  closeInfo(a.dir, a.info); await a.release();
+  writeFileSync(join(a.dir, 'branch.json'), JSON.stringify({ ...stale, closed: undefined }));
+  const recovering = recoverBranches(profile, silent);
+  closeInfo(a.dir, a.info); // it really did close; the listing above just saw it a moment too early
+  await recovering;
+  const other = await branch(profile);
+  other.memory.append('user', 'said on another machine'); await other.memory.close();
+  saveInfo(other.dir, { ...other.info, host: 'elsewhere' }); await other.release();
+  const broken = await branch(profile);
+  broken.memory.append('user', 'said before the journal broke'); await broken.memory.close();
+  writeFileSync(join(broken.dir, 'pending-inputs.json'), '[{"id": "half');
+  await broken.release();
+  const warnings: string[] = [];
+  assert.deepEqual(await recoverBranches(profile, w => warnings.push(w)), []);
+  assert.ok(!trunkLog(profile).some(e => /ended without closing/.test(e.text)), 'no note for a branch that closed');
+  assert.match(warnings.join('\n'), /runs on elsewhere/);
+  assert.match(warnings.join('\n'), new RegExp(`Could not recover branch ${broken.info.id}`));
+  assert.ok(!readInfo(other.dir)?.closed && !readInfo(broken.dir)?.closed, 'both stay to be recovered later');
+  assert.ok(!trunkLog(profile).some(e => e.text === 'said before the journal broke'));
+});
+
+test('an interrupted branch that said nothing new adds no note', async () => {
+  const profile = home();
+  await trunkWith(profile, 2);
+  const a = await branch(profile);
+  await a.memory.close(); await a.release();
+  assert.deepEqual(await recoverBranches(profile, silent), [a.info.id]);
+  assert.equal(trunkLog(profile).length, 2);
 });

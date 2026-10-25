@@ -8,7 +8,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { StringEnum, type Api, type Model } from '@earendil-works/pi-ai';
 import { allowSearch, cutOffChildren, delegation, NO_DELEGATION, RESTARTED, SEARCH_DOC, STEERABLE, SUBAGENT, TELL_PARENT, VIEW_DOC } from './prompts.ts';
 import { memoryTools, searchTool } from './tools.ts';
-import { VIEW, type Memory } from './memory.ts';
+import { VIEW, type Kind, type Memory } from './memory.ts';
 import type { ModelChoice } from './compactor.ts';
 import { cachePayload } from './cache.ts';
 import { CUT_OFF, RunHistory, isRunning, transition, sessionMessages, type RunInfo, type RunState } from './runs.ts';
@@ -132,12 +132,22 @@ export class Children {
   private readonly launches = new Set<Promise<unknown>>();
   private readonly completions = new Set<Promise<void>>();
   /** The branch's memory. A rebase replaces it; a run keeps reading the one it started with, whose ids its view uses. */
-  memory: Memory;
+  private current: Memory;
+  /** Lines logged while a rebase has closed the old memory and not yet opened the new one. */
+  private held: [Kind, string][] = [];
+  get memory() { return this.current; }
+  set memory(memory: Memory) {
+    this.current = memory;
+    for (const [kind, text] of this.held.splice(0)) memory.append(kind, text);
+  }
+  private log(kind: Kind, text: string) {
+    if (this.current.closed) this.held.push([kind, text]); else this.current.append(kind, text);
+  }
   constructor(memory: Memory, private readonly registry: ModelRegistry,
     private readonly choice: () => ModelChoice, private readonly instructions: () => string,
     private readonly report: (text: string, options?: { once?: boolean; count?: number }) => Promise<void>, private readonly warn: (text: string) => void,
     private readonly profileDirectory = memory.directory, private readonly options: Options = {}) {
-    this.memory = memory;
+    this.current = memory;
     this.history = new RunHistory(profileDirectory);
     for (const warning of this.history.warnings) warn(warning);
     for (const run of this.history.records.values()) {
@@ -492,10 +502,10 @@ export class Children {
       if (parent && parent.info.state !== 'stopping') { parent.pendingReports.push(text); parent.wake?.(); this.changed(); }
       return;
     }
-    if (this.closing) this.memory.append('work', text);
+    if (this.closing) this.log('work', text);
     else try { await this.report(text, { count }); }
     catch (error) {
-      this.memory.append('work', text);
+      this.log('work', text);
       this.warn(`Subagent report saved but could not wake the parent: ${String(error)}`);
     }
     if (batch && batch.ids.length > 1) this.options.hold?.(batch.ids[0], []);
@@ -508,7 +518,7 @@ export class Children {
     if (live && !['running', 'waiting', 'paused'].includes(live.info.state)) throw new Error(`${id} is finishing. Its report will arrive on its own${source === 'user' ? '' : '; tell it again after that to resume it'}.`);
     if (!live) throw new Error(`No running subagent ${id}.`);
     const text = message.trim(); if (!message.trim()) throw new Error('Message is empty.');
-    if (source === 'user') this.memory.append('user', `Direct guidance to subagent [${id}]: ${text}`);
+    if (source === 'user') this.log('user', `Direct guidance to subagent [${id}]: ${text}`);
     const guidance: RunInfo['guidance'][number] = { text, date: Date.now(), state: 'queued', from: source };
     live.info.guidance.push(guidance); this.save(live.info);
     try {
@@ -685,7 +695,7 @@ export class Children {
       mark();
       const records = runs().flatMap(run => this.history.records.get(run) ?? []);
       for (const run of records.reverse()) this.history.remove(run.id); // Children first, so a failure never leaves one without its parent.
-      if (!reports) this.memory.append('work', `[${id}] deleted by the user`);
+      if (!reports) this.log('work', `[${id}] deleted by the user`);
     } finally { for (const run of marked) this.deleting.delete(run); this.changed(); }
   }
   async close() {

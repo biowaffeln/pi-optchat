@@ -67,10 +67,13 @@ export async function takeLock(path: string, describe: () => string) {
     // Nothing answered, so the socket file is left over from a dead process. Remove it only if it is still the same file.
     if (before !== 'pipe') {
       let now; try { now = statSync(path); } catch { now = undefined; }
-      if (now && now.ino !== before.ino) throw new LockBusy('a process that just took it');
+      // An inode number alone can be reused at once (ext4), so the file's device and birth time must match too.
+      if (now && (now.ino !== before.ino || now.dev !== before.dev || now.birthtimeMs !== before.birthtimeMs || now.ctimeMs !== before.ctimeMs)) throw new LockBusy('a process that just took it');
       if (now) unlinkSync(path);
     }
-    await listen();
+    // Another process can bind between our unlink and listen; it holds the lock now.
+    try { await listen(); }
+    catch (again) { if (again instanceof Error && 'code' in again && again.code === 'EADDRINUSE') throw new LockBusy('a process that just took it'); throw again; }
   }
   if (!isWindows) { try { chmodSync(path, 0o600); } catch (error) { server.close(); throw error; } }
   let released: Promise<void> | undefined;

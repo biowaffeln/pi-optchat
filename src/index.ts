@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
@@ -337,8 +337,13 @@ export default function optchat(pi: ExtensionAPI) {
         await active.children.close(); active = undefined;
       }
       await openingMemory?.close();
-      // Nothing was said in it: a branch that never opened is closed as it is (merging adds nothing).
-      try { closeInfo(started.dir, started.info); } catch { /* the next start recovers it */ }
+      // A branch that never opened is closed as it is, if it holds nothing: no messages of its own, no journal it took over.
+      // Otherwise it stays open, so the next start recovers it (or keeps failing on it, rather than drop what is in it).
+      const journaled = ['pending-inputs.json', 'pending-reports.json'].some(file => {
+        try { return readFileSync(join(started.dir, file), 'utf8').trim() !== '[]'; } catch (e) { return existsSync(join(started.dir, file)); }
+      });
+      const own = existsSync(join(started.dir, 'main')) && readdirSync(join(started.dir, 'main')).some(file => statSync(join(started.dir, 'main', file)).size > 0);
+      if (!journaled && !own) try { closeInfo(started.dir, started.info); } catch { /* the next start recovers it */ }
       await started.release(); throw error;
     }
   };
@@ -601,8 +606,9 @@ export default function optchat(pi: ExtensionAPI) {
       if (!ctx.hasUI) throw new Error('/optchat import requires interactive Pi.');
       if (!ctx.isIdle() || a.children.active || reports.length) throw new Error('Finish active work and pending reports before importing.');
       // An import rebuilds the shared memory every session branches from, so it runs only with this session open.
-      const others = [];
-      for (const b of listBranches(a.dir)) if (!b.closed && b.id !== a.branch.info.id && await liveStatus(a.dir, b.id)) others.push(b.id);
+      // Crashed sessions are merged first: one left unmerged could never merge into the new memory.
+      await recoverBranches(a.dir, warning => ctx.ui.notify(warning, 'warning'));
+      const others = listBranches(a.dir).filter(b => !b.closed && b.id !== a.branch.info.id).map(b => b.id);
       if (others.length) throw new Error(`Close the other sessions on ${a.name} first (${others.join(', ')}): an import rewrites the memory they share.`);
       importing = true; importController = new AbortController(); let closed = false;
       status(ctx);
