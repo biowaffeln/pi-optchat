@@ -64,7 +64,7 @@ export function chronological(entries: readonly ImportedEntry[]) {
   }
   return [...groups.values()].sort((a, b) => a.date.localeCompare(b.date)).flatMap(g => g.entries);
 }
-/** Call only while holding the profile lock, after closing its old Memory worker. */
+/** Call only with every other session on the profile closed, after closing the trunk's old Memory worker. */
 export function prepareImport(dir: string, old: Memory, incoming: readonly ImportedEntry[], mode: ImportMode): ImportJob | undefined {
   if (pendingImport(dir)) throw new Error('Resume or discard the pending import first.');
   const { added, skipped } = deduplicate(old.root, incoming);

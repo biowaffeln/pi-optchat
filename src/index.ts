@@ -353,7 +353,7 @@ export default function optchat(pi: ExtensionAPI) {
       if (boundName && typeof flag === 'string' && flag !== boundName) throw new Error(`Session belongs to ${boundName}; cannot resume it as ${flag}.`);
       const name = boundName ?? (typeof flag === 'string' ? flag : await chooseProfile(ctx));
       if (!name) { status(ctx); return; }
-      // A profile another Pi holds fails here (ProfileBusyError) like any other profile that cannot open.
+      // A profile another Pi holds fails here (the older OptChat's lock) like any other profile that cannot open.
       await openProfile(name, ctx);
       if (name !== boundName) pi.appendEntry(binding, { name });
     } catch (error) {
