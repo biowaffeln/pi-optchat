@@ -115,9 +115,26 @@ export async function startBranch(profile: string, cwd: string, warn: (text: str
       for (const name of ['pending-inputs.json', 'pending-reports.json']) {
         if (existsSync(join(profile, name))) renameSync(join(profile, name), join(dir, name));
       }
+      adoptRuns(profile, dir);
     });
   } catch (error) { await release(); rmSync(dir, { recursive: true, force: true }); throw error; }
   return { info, dir, release, setStatus: (next: Record<string, unknown>) => { status = { ...next, id }; } };
+}
+
+/** Subagents belong to the session that started them, but a session that closed (or crashed and was recovered) leaves its
+ * runs to the next one that starts: the cut-off ones are resumed there, and `tell` can resume the finished ones, as when one
+ * Pi held the profile. The profile's own `runs/` from before branches goes the same way. Runs under the trunk lock, so two
+ * sessions starting at once don't split them. */
+function adoptRuns(profile: string, dir: string) {
+  const to = join(dir, 'runs');
+  const from = [profile, ...listBranches(profile).filter(info => info.closed).map(info => branchDirectory(profile, info.id))].map(folder => join(folder, 'runs'));
+  for (const folder of from) {
+    if (!existsSync(folder)) continue;
+    mkdirSync(to, { recursive: true, mode: 0o700 });
+    // Transcripts first: metadata without its transcript would look like a run whose chat is lost.
+    const files = readdirSync(folder).sort((a, b) => Number(a.endsWith('.optchat.json')) - Number(b.endsWith('.optchat.json')));
+    for (const file of files) if (!existsSync(join(to, file))) renameSync(join(folder, file), join(to, file));
+  }
 }
 
 /** A branch's memory: the trunk's first `base` messages and their nodes, then the branch's own, which it alone writes. */

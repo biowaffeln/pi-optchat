@@ -55,7 +55,7 @@ Every report ends with `Full chat: zoom("<id>")`, so the agent can check it agai
 
 ## The "agents at work" status line
 
-While any subagent runs, each new input to the main agent (your message, a report, a `tell_parent` message, the restart note, a connected window's message) ends with one status line:
+While any subagent runs, each new input to the main agent (your message, a report, a `tell_parent` message, the restart note) ends with one status line:
 
 ```
 [OptChat status] Agents at work now: 8f28e694 "Review PR #123 carefully", …
@@ -77,9 +77,9 @@ It lists the id and the first words of each task, so the main agent knows what i
 
 `tell` to a finished child resumes it: the same agent (ID, parent, model, directory) reopens its saved transcript, gets the message as a new prompt, and sends a new report.
 
-- This also works for children from earlier Pi sessions.
+- This also works for children from earlier Pi sessions: a session that closes leaves its subagents to the next one that opens the profile (see [branches.md](branches.md)). Children of a session still open elsewhere belong to that session.
 - Only the agent that started the child can resume it, and the resumed child takes one active slot.
-- Connected windows can't be resumed, and a child whose transcript is missing must be spawned fresh.
+- A child whose transcript is missing must be spawned fresh.
 
 ## Levels and limits
 

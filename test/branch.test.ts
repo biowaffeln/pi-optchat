@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { fork as forkProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { join } from 'node:path';
@@ -183,4 +183,23 @@ test('the trunk lock serializes merges from several processes, and a dead holder
   const release = await waitLock(path, () => 'me', 2000);
   assert.equal(await holder(path), 'me');
   await release();
+});
+
+test('a new session takes over the runs of closed sessions (the first one also those from before branches), but not of open ones', async () => {
+  const profile = home();
+  await trunkWith(profile, 2);
+  mkdirSync(join(profile, 'runs'));
+  writeFileSync(join(profile, 'runs', 'old.jsonl'), '{}\n'); writeFileSync(join(profile, 'runs', 'old.optchat.json'), '{}');
+  const open = await branch(profile), closed = await branch(profile);
+  try {
+    for (const b of [open, closed]) { mkdirSync(join(b.dir, 'runs'), { recursive: true }); writeFileSync(join(b.dir, 'runs', `${b.info.id}.optchat.json`), '{}'); }
+    await closed.memory.close(); closeInfo(closed.dir, closed.info); await closed.release();
+    const next = await branch(profile);
+    try {
+      assert.deepEqual(readdirSync(join(next.dir, 'runs')), [`${closed.info.id}.optchat.json`]);
+      assert.deepEqual(readdirSync(join(open.dir, 'runs')).sort(), [`${open.info.id}.optchat.json`, 'old.jsonl', 'old.optchat.json'].sort(),
+        'the first session took the profile\'s old runs, and keeps them and its own while it is open');
+      assert.deepEqual(readdirSync(join(profile, 'runs')), []);
+    } finally { await next.memory.close(); await next.release(); }
+  } finally { await open.memory.close(); await open.release(); }
 });
