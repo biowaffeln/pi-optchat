@@ -309,6 +309,18 @@ test('tell brings a finished isolated run\'s worktree back on its branch, and it
   } finally { await children.close(); removeDir(dir); }
 });
 
+test('a cwd that is untracked in the repository fails the spawn up front and leaves no worktree or branch', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-worktree-untracked-')), path = repo(dir), { children } = await harness(dir);
+  try {
+    mkdirSync(join(path, 'scratch')); writeFileSync(join(path, 'scratch', 'notes.txt'), 'local\n');
+    await assert.rejects(children.spawn([{ task: 'x', cwd: join(path, 'scratch'), isolation: 'worktree' }], dir),
+      /Task 1: .*scratch is not in the last commit of its repository \(it is untracked or ignored\)/);
+    assert.deepEqual(branches(path), ['main']);
+    assert.equal(git(path, 'worktree', 'list', '--porcelain').split('\n').filter(l => l.startsWith('worktree ')).length, 1);
+    assert.equal(children.history.records.size, 0);
+  } finally { await children.close(); removeDir(dir); }
+});
+
 test('a worktree run cut off by Pi closing keeps its worktree, and the next start resumes it there', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-worktree-cut-')), path = repo(dir), first = await harness(dir);
   const [id] = await first.children.spawn([{ task: 'HOLD', cwd: path, isolation: 'worktree' }], dir);

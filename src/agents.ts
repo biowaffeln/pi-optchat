@@ -331,6 +331,11 @@ export class Children {
         const id = randomUUID().slice(0, 8), asked = taskDirectory(cwd, task.cwd);
         const made = task.isolation === 'worktree' ? await createWorktree(asked, id) : undefined;
         const worktree = made?.tree, directory = made ? made.cwd : asked;
+        // An untracked or ignored directory is not in the commit the worktree was made from; Pi would start there anyway and every command would fail.
+        if (made && !(existsSync(directory) && statSync(directory).isDirectory())) {
+          await discardWorktree(made.tree);
+          throw new Error(`Task ${tasks.indexOf(task) + 1}: ${asked} is not in the last commit of its repository (it is untracked or ignored), so it does not exist in a worktree made from that commit. Commit it, or start the task in a directory that is committed.`);
+        }
         let session: AgentSession;
         try {
           session = await this.open({ id, directory, depth, parentId, model: task.model, thinking: task.thinking, tools: task.tools, memory: task.memory, worktree,
