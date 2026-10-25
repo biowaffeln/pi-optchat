@@ -461,6 +461,7 @@ export class Children {
   private directChildren(id: string) { return [...this.running.values()].filter(c => c.info.parentId === id); }
   private async execute(live: LiveRun, prompt: string) {
     const { session, info } = live;
+    let settled: string | undefined; // The worktree's line in the report, kept even if the run is deleted.
     try {
       // A stop that lands before the first prompt has no turn to abort, so it is honoured here.
       const state: RunState = info.state; // a local, so the loop below still sees later state changes
@@ -539,7 +540,7 @@ export class Children {
       this.dispose(session);
       // While this runs the run still counts as live, so a tell can't resume it into a worktree being removed. A run cut off
       // by Pi closing keeps its worktree as it is, to go on in it at the next start.
-      if (info.worktree && !(info.cutOff && info.state === 'stopped')) info.report = `${info.report ?? ''}\n\n${await this.settleWorktree(info, info.worktree)}`;
+      if (info.worktree && !(info.cutOff && info.state === 'stopped')) { settled = await this.settleWorktree(info, info.worktree); info.report = `${info.report ?? ''}\n\n${settled}`; }
       this.running.delete(info.id);
     }
     if (info.cutOff) {
@@ -550,7 +551,7 @@ export class Children {
     // Its cut-off children were named to it when it was resumed; having ended on its own, it no longer will resume them.
     if (!this.closing) for (const run of this.history.descendants(info.id)) if (run.cutOff) { delete run.cutOff; this.save(run); }
     // Said plainly, so the parent does not take the user's choice for a failure and delegate the task again.
-    if (this.deleting.has(info.id)) info.report = 'Deleted by the user while it was working. The user dropped this task on purpose: do not redo it or delegate it again unless they ask.';
+    if (this.deleting.has(info.id)) info.report = `Deleted by the user while it was working. The user dropped this task on purpose: do not redo it or delegate it again unless they ask.${settled ? `\n\n${settled}` : ''}`;
     // A metadata failure must not suppress delivery of the actual result.
     try { this.save(info); } catch (error) { this.warn(`Could not save run metadata: ${String(error)}`); }
     // A deleted run's transcript is gone.

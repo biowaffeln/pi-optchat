@@ -341,6 +341,20 @@ test('a resume that fails after its worktree came back removes the worktree agai
   } finally { await children.close(); removeDir(dir); }
 });
 
+test('deleting a working worktree run still says which branch its changes are on', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-worktree-delete-')), path = repo(dir), { children, asked, reports } = await harness(dir);
+  try {
+    const [id] = await children.spawn([{ task: 'HOLD', cwd: path, isolation: 'worktree' }], dir);
+    await until(() => asked.length > 0);
+    writeFileSync(join(worktreePath(id), 'partial.txt'), 'half\n');
+    await children.remove(id);
+    const report = reports.find(r => r.startsWith(`[${id}]`)) ?? '';
+    assert.match(report, /Deleted by the user while it was working/);
+    assert.match(report, new RegExp(`changes are on branch optchat/${id} in `));
+    assert.equal(git(path, 'show', `optchat/${id}:partial.txt`), 'half');
+  } finally { await children.close(); removeDir(dir); }
+});
+
 test('a worktree run cut off by Pi closing keeps its worktree, and the next start resumes it there', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-worktree-cut-')), path = repo(dir), first = await harness(dir);
   const [id] = await first.children.spawn([{ task: 'HOLD', cwd: path, isolation: 'worktree' }], dir);
