@@ -52,6 +52,14 @@ An older OptChat (before branches) holds `lock.sock`; this one refuses to open a
 
 A closed branch's folder stays, since it holds its subagents' transcripts; `zoom("<run id>")` finds a run in any branch of the profile. Deleting a closed branch's folder loses only those transcripts.
 
+## Peers
+
+Sessions don't share memory while they run, but they can see each other:
+
+- `peers()` lists the other open sessions: id, working directory, whether they work, and their latest lines (the view's, then the running turn's). Each session's lock answers with that status, so a crashed session never shows up.
+- `ask_peer(id, question)` has the profile's compactor model answer from that session's published view (`view.txt`, rewritten after each turn) and its turn in progress (`turn.txt`, up to 16 KB of short lines). The session itself isn't interrupted and never sees the question. It costs one cheap call that reads the view, cached for a few minutes.
+- `note_peer(id, text)` leaves at most 280 bytes in the session's `notes.jsonl`. It never starts a turn there: it goes at the end of the next thing the user sends that session, as `[note from <id> (<cwd>)] ...`, and is logged with it. One note per session per turn, and there is no reply tool. The sender's log has the tool call; the receiver's has the note. A note that no input carried goes into the receiver's memory when it closes (or is recovered after a crash).
+
 ## Limits and costs
 
 - A branch doesn't see its siblings until it rebases or a new session starts after they merge.

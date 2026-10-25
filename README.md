@@ -175,6 +175,7 @@ Every Pi session on a profile is a **branch** of the profile's memory, the **tru
 - It merges what it said back into the trunk when it closes, after **Merge when idle** (30 minutes by default) with nothing new, and when its view batch-merges after another session merged (it then starts again from the trunk's end, so it sees the others).
 - Sessions don't see each other live. Merges are appended in one block each, with original dates kept, so the trunk reads in the order things became shared.
 - A session that crashed is merged, marked as interrupted, the next time the profile opens.
+- The agent can list the other open sessions (`peers`), ask about one (`ask_peer`, answered by the compactor model from that session's view), and leave one a short note (`note_peer`) that it sees at the end of its next input.
 
 How merges keep the summary tree and the cache, the locks, and the costs: [docs/branches.md](docs/branches.md).
 
