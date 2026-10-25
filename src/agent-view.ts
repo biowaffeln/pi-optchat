@@ -263,7 +263,7 @@ export class AgentView implements Component, Focusable {
     if (!run) return color('error', ` ${id} · run not found`);
     const live = children.live(run.id);
     const dot = live ? color('accent', '●') : run.state === 'completed' ? color('success', '✓') : run.state === 'failed' ? color('error', '✗') : color('muted', '■');
-    const right = `${statusOf(run, children)} · ${elapsed((run.ended ?? Date.now()) - run.started)} · ${run.model.slice(run.model.indexOf('/') + 1)}`;
+    const right = `${statusOf(run, children)} · ${elapsed((run.ended ?? Date.now()) - run.started)} · ${run.model.slice(run.model.indexOf('/') + 1)}${runTags(run)}`;
     const left = ` ${dot} ${color('accent', run.id)}  `;
     const room = width - visibleWidth(left) - visibleWidth(right) - 3;
     if (room < 8) return truncateToWidth(`${left}${color('dim', right)}`, width);
@@ -331,3 +331,7 @@ export async function showAgentView(ctx: ExtensionContext, options: { id: string
     }, { overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', row: 0, col: 0 } });
   } finally { restore(); }
 }
+
+/** A run's spawn options for the header, after its model: role, read-only, no memory, worktree branch. */
+export const runTags = (run: RunInfo) => [run.role, run.tools === 'readonly' && 'read-only', run.memory === false && 'no memory', run.worktree?.branch]
+  .filter(Boolean).map(tag => ` · ${tag}`).join('');

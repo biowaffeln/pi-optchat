@@ -6,7 +6,9 @@ import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsMana
 import * as sdk from '@earendil-works/pi-coding-agent';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { StringEnum, type Api, type Model } from '@earendil-works/pi-ai';
-import { allowSearch, cutOffChildren, delegation, NO_DELEGATION, RESTARTED, SEARCH_DOC, STEERABLE, SUBAGENT, TELL_PARENT, VIEW_DOC } from './prompts.ts';
+import { allowSearch, cutOffChildren, delegation, NO_DELEGATION, READ_ONLY, RESTARTED, SEARCH_DOC, STEERABLE, SUBAGENT, SUBAGENT_NO_MEMORY, TELL_PARENT, VIEW_DOC, worktreeDoc } from './prompts.ts';
+import { DEFAULT_ROLES, TOOL_SETS, type Roles, type ToolSet } from './roles.ts';
+import { createWorktree, discardWorktree, finishWorktree, reopenWorktree, repoOf, workingDirectory, type Worktree } from './worktree.ts';
 import { memoryTools, searchTool } from './tools.ts';
 import { VIEW, type Kind, type Memory } from './memory.ts';
 import type { ModelChoice } from './compactor.ts';
@@ -47,7 +49,9 @@ interface Options { parentSession?: string; usage?: UsageLedger; createSession?:
   /** Journals the reports a main-agent spawn has so far while its other children still run (none: the batch was delivered), so a crash cannot lose them. */
   hold?: (batch: string, texts: string[]) => void;
   /** Read on every spawn, so a changed profile setting applies to the next one. Missing settings take their defaults. */
-  settings?: () => Partial<Settings> }
+  settings?: () => Partial<Settings>;
+  /** The roles a task may name; the built-in ones when unset. */
+  roles?: () => Roles }
 
 // Subagents load the user's installed extensions, except any copy of OptChat itself: they get memory tools directly and must not open a profile.
 const packageName = (path: string): string | undefined => {
@@ -66,15 +70,26 @@ export const taskDirectory = (cwd: string, path = '.', windows = process.platfor
 const CWD_DOC = 'Project directory the subagent works in (~ allowed); its AGENTS.md files load from there. Defaults to your current directory.';
 /** The spawn tools' tasks. What a task leaves out of model and thinking is the profile's subagent choice. */
 export const TASKS = Type.Array(Type.Object({ task: Type.String(), cwd: Type.Optional(Type.String({ description: CWD_DOC })),
-  model: Type.Optional(Type.String({ description: 'Leave unset for the profile\'s subagent model (named in your instructions). Set only when the user asks for a model, as provider/id from models().' })),
-  thinking: Type.Optional(StringEnum(THINKING, { description: 'Leave unset for the profile\'s subagent level. Set only when the user asks for one.' })) }), { minItems: 1 });
+  role: Type.Optional(Type.String({ description: 'A role from your instructions (scout, reviewer, ...): presets model, thinking, tools and memory for the task. Pick one freely when it fits; fields set on the task override it.' })),
+  model: Type.Optional(Type.String({ description: 'Leave unset for the role\'s or the profile\'s subagent model (named in your instructions). Set only when the user asks for a model, as provider/id from models().' })),
+  thinking: Type.Optional(StringEnum(THINKING, { description: 'Leave unset for the role\'s or the profile\'s subagent level. Set only when the user asks for one.' })),
+  tools: Type.Optional(StringEnum(TOOL_SETS, { description: '"all" (default) or "readonly": no edit or write tools. Bash stays, so read-only is a rule the subagent is asked to keep, not a sandbox; extension tools stay too.' })),
+  memory: Type.Optional(Type.Boolean({ description: 'Default true: the subagent gets the memory view and zoom/date. false: only your task text (plus AGENTS.md and skills), so write a complete brief.' })),
+  isolation: Type.Optional(StringEnum(['worktree'] as const, { description: '"worktree": the subagent works in its own git worktree on a new branch optchat/<id> from the HEAD of the repo holding cwd. On finish, its changes are committed on that branch (named in its report); with none, worktree and branch are removed.' })) }), { minItems: 1 });
 export type Task = Static<typeof TASKS>[number];
+/** A task with its role, model and options resolved: task fields win over the role, the role over the profile's defaults. */
+interface Resolved { task: string; cwd?: string; model: Model<Api>; thinking: ModelChoice['thinking']; role?: string; tools: ToolSet; memory: boolean; isolation?: 'worktree' }
+/** What open() builds a child session with, new or resumed. */
+interface ChildOptions { tools: ToolSet; memory: boolean; worktree?: Worktree }
 /** The tool beside spawn that lists what a task's `model` may be. */
 export const modelsTool = (children: () => Children) => ({ name: 'models', label: 'List models',
   description: 'The models a spawn task may name, as provider/id, with the profile\'s subagent default marked. provider narrows the list to one provider.',
   parameters: Type.Object({ provider: Type.Optional(Type.String()) }),
   execute: async (_id: string, args: { provider?: string }) => result(children().models(args.provider)) });
 const isOptchat = (path: string) => packageName(path) === 'pi-optchat';
+/** Pi's built-in tools that change files, left out of a read-only child; bash stays (see READ_ONLY in prompts.ts). */
+export const READ_ONLY_EXCLUDED = ['edit', 'write'];
+const READ_ONLY_ADDED = ['read', 'grep', 'find', 'ls'];
 
 // Pi's CLI adds its built-in extensions (MCP, codemode, tool search) to its own session; SDK sessions such as
 // subagents must add them. Pi versions that do not export a factory simply do not get that extension.
@@ -159,6 +174,25 @@ export class Children {
     }
   }
   private get settings(): Settings { return { ...DEFAULT_SETTINGS, ...this.options.settings?.() }; }
+  get roles(): Roles { return this.options.roles?.() ?? DEFAULT_ROLES; }
+  /**
+   * Each task's model, thinking, tools and memory: what the task sets, else its role's, else the profile's subagent choice
+   * (tools all, memory on). A read-only parent's children are read-only too, so delegating can't get around it.
+   */
+  resolve(tasks: Task[], parentTools?: ToolSet): Resolved[] {
+    const profile = this.choice(), roles = this.roles;
+    return tasks.map((task, i) => {
+      const role = task.role === undefined ? undefined : roles[task.role];
+      if (task.role !== undefined && !role) throw new Error(`Task ${i + 1}: no role ${task.role}. Roles: ${Object.keys(roles).join(', ') || 'none (this profile\'s config.json sets an empty roles object)'}.`);
+      const named = task.model ?? role?.model, name = named ?? `${profile.provider}/${profile.model}`, model = this.find(name);
+      // Like Pi's own setModel: a named model needs auth, so a guess at a provider the user isn't logged in to fails here, not in the child.
+      // A role's model is never swapped for another: the role was picked for it.
+      if (!model || named && !this.registry.hasConfiguredAuth(model)) throw new Error(`${task.model === undefined && role?.model ? `Task ${i + 1}: role ${task.role}'s model is unavailable: ${name}. Pick another role or name a model. ` : `Subagent model unavailable: ${name}. `}Models you can use: ${this.registry.getAvailable().map(m => `${m.provider}/${m.id}`).join(', ') || 'none'}.`);
+      const tools = parentTools === 'readonly' ? 'readonly' : task.tools ?? role?.tools ?? 'all';
+      return { task: task.task, cwd: task.cwd, model, thinking: task.thinking ?? role?.thinking ?? profile.thinking, role: task.role, tools,
+        memory: task.memory ?? role?.memory ?? true, isolation: task.isolation };
+    });
+  }
   private full(extra: number) { return this.running.size + this.launching + extra > this.settings.maxAgents; }
   /** A model named `provider/id`, as runs record it. */
   /** The models a task may name, one `provider/id` per line: every model Pi is logged in to, the profile's subagent choice marked. */
@@ -237,13 +271,13 @@ export class Children {
   }
   private async launch(tasks: Task[], cwd: string, signal: AbortSignal | undefined, parentId: string | undefined) {
     for (const directory of tasks.map(t => taskDirectory(cwd, t.cwd))) if (!existsSync(directory) || !statSync(directory).isDirectory()) throw new Error(`No such directory: ${directory}`);
-    const profile = this.choice();
-    const runs = tasks.map(task => {
-      const name = task.model ?? `${profile.provider}/${profile.model}`, model = this.find(name);
-      // Like Pi's own setModel: a named model needs auth, so a guess at a provider the user isn't logged in to fails here, not in the child.
-      if (!model || task.model && !this.registry.hasConfiguredAuth(model)) throw new Error(`Subagent model unavailable: ${name}. Models you can use: ${this.registry.getAvailable().map(m => `${m.provider}/${m.id}`).join(', ') || 'none'}.`);
-      return { ...task, model, thinking: task.thinking ?? profile.thinking };
-    });
+    const runs = this.resolve(tasks, parentId ? this.running.get(parentId)?.info.tools : undefined);
+    // Checked before anything starts, so a task outside a repository fails the spawn rather than running unisolated.
+    await Promise.all(runs.map(async (run, i) => {
+      if (run.isolation !== 'worktree') return;
+      try { await repoOf(taskDirectory(cwd, run.cwd)); }
+      catch (error) { throw new Error(`Task ${i + 1}: ${error instanceof Error ? error.message : String(error)}`); }
+    }));
     if (this.closing) throw new Error('Profile is closing.');
     this.settling++;
     try { await this.memory.settle(signal); } finally { this.settling--; }
@@ -264,9 +298,9 @@ export class Children {
     const [first] = launched, answered = launched.length > 1 && first.session.model?.api === 'anthropic-messages' ? answering(first.session) : undefined;
     for (const live of launched) {
       live.batch = batch;
-      const work = this.execute(live, `${view}\n\nYour task:\n${live.info.task}`).catch(error => this.warn(`Subagent completion failed: ${String(error)}`))
+      const work = this.execute(live, live.info.memory === false ? `Your task:\n${live.info.task}` : `${view}\n\nYour task:\n${live.info.task}`).catch(error => this.warn(`Subagent completion failed: ${String(error)}`))
         .finally(() => { this.completions.delete(work); this.changed(); });
-      if (live === first && answered) for (const sibling of launched.slice(1)) if ((['model', 'thinking', 'cwd'] as const).every(k => sibling.info[k] === first.info[k])) sibling.primed = Promise.race([answered, work]);
+      if (live === first && answered) for (const sibling of launched.slice(1)) if ((['model', 'thinking', 'cwd', 'tools', 'memory'] as const).every(k => sibling.info[k] === first.info[k])) sibling.primed = Promise.race([answered, work]);
       this.completions.add(work);
       live.completion = work;
     }
@@ -280,7 +314,7 @@ export class Children {
     launch.then(done, done);
     return launch;
   }
-  private async launchBatch({ tasks, cwd, depth, parentId, signal, cancelled }: { tasks: { task: string; cwd?: string; model: Model<Api>; thinking: ModelChoice['thinking'] }[]; cwd: string; depth: number;
+  private async launchBatch({ tasks, cwd, depth, parentId, signal, cancelled }: { tasks: Resolved[]; cwd: string; depth: number;
     parentId?: string; signal?: AbortSignal; cancelled: () => boolean }) {
     const launched: LiveRun[] = [];
     let reserved = tasks.length;
@@ -289,11 +323,17 @@ export class Children {
       for (const task of tasks) {
         signal?.throwIfAborted();
         if (cancelled()) throw new Error('Parent or profile is stopping.');
-        const id = randomUUID().slice(0, 8), directory = taskDirectory(cwd, task.cwd);
-        const session = await this.open({ id, directory, depth, parentId, model: task.model, thinking: task.thinking,
-          sessionManager: SessionManager.create(directory, join(this.profileDirectory, 'runs')) });
+        const id = randomUUID().slice(0, 8), asked = taskDirectory(cwd, task.cwd);
+        const worktree = task.isolation === 'worktree' ? await createWorktree(asked, id) : undefined;
+        const directory = worktree ? workingDirectory(worktree, asked) : asked;
+        let session: AgentSession;
+        try {
+          session = await this.open({ id, directory, depth, parentId, model: task.model, thinking: task.thinking, tools: task.tools, memory: task.memory, worktree,
+            sessionManager: SessionManager.create(directory, join(this.profileDirectory, 'runs')) });
+        } catch (error) { if (worktree) await discardWorktree(worktree); throw error; }
         const info: RunInfo = { id, task: task.task, cwd: directory, model: `${task.model.provider}/${task.model.id}`, thinking: session.thinkingLevel,
-          parentSession: this.options.parentSession ?? '', parentId, depth, sessionFile: session.sessionFile, started: Date.now(), state: 'running', guidance: [] };
+          parentSession: this.options.parentSession ?? '', parentId, depth, sessionFile: session.sessionFile, started: Date.now(), state: 'running', guidance: [],
+          ...task.role !== undefined && { role: task.role }, tools: task.tools, memory: task.memory, ...worktree && { worktree } };
         const live: LiveRun = { session, info, updated: Date.now(), tools: new Map(), pendingReports: [], pendingGuidance: [] };
         launched.push(live); this.save(info); this.running.set(id, live);
         this.launching--; reserved--;
@@ -305,6 +345,7 @@ export class Children {
       for (const child of launched) {
         await this.shutdown(child.session); // Extensions such as MCP close their connections and stop their server processes.
         this.dispose(child.session); this.running.delete(child.info.id);
+        if (child.info.worktree) await discardWorktree(child.info.worktree);
         transition(child.info, 'failed'); child.info.ended = Date.now(); child.info.report = `Launch failed: ${String(error)}`;
         this.save(child.info);
       }
@@ -314,8 +355,8 @@ export class Children {
   }
   /** Builds a child session with the same prompt, tools and extensions whether it is new or resumed. */
   private async open(o: { id: string; directory: string; depth: number; parentId?: string; model: Model<Api>;
-    thinking?: ModelChoice['thinking']; sessionManager: SessionManager }) {
-    const { id, directory, depth, parentId } = o, memory = this.memory;
+    thinking?: ModelChoice['thinking']; sessionManager: SessionManager } & ChildOptions) {
+    const { id, directory, depth, parentId } = o, memory = this.memory, readonly = o.tools === 'readonly';
     const { subagentLevels, maxAgents, memorySearch } = this.settings, delegates = depth < subagentLevels;
     // The user's settings list their installed packages; a copy in memory keeps the child from writing them back.
     const settingsManager = SettingsManager.inMemory({ ...SettingsManager.create(directory, getAgentDir()).getSettings(),
@@ -329,8 +370,9 @@ export class Children {
         // Same prompt as the main agent (AGENTS.md files, skills, cwd); only the OptChat preamble differs.
         // Read every run, so edits reach a live child's next run (after a pause, say); Pi sends only the changed sections.
         pi.on('before_agent_start', event => {
-          event.systemPromptOptions.customPrompt = allowSearch(`${SUBAGENT}\n\n${VIEW_DOC}${memorySearch ? SEARCH_DOC : ''}`, memorySearch);
-          event.systemPromptOptions.sections.instructions = [this.instructions(), delegates ? delegation(maxAgents, this.choice()) : NO_DELEGATION, STEERABLE, TELL_PARENT].filter(Boolean).join('\n\n');
+          event.systemPromptOptions.customPrompt = o.memory ? allowSearch(`${SUBAGENT}\n\n${VIEW_DOC}${memorySearch ? SEARCH_DOC : ''}`, memorySearch) : SUBAGENT_NO_MEMORY;
+          event.systemPromptOptions.sections.instructions = [this.instructions(), delegates ? delegation(maxAgents, this.choice(), this.roles) : NO_DELEGATION, STEERABLE, TELL_PARENT,
+            readonly ? READ_ONLY : '', o.worktree ? worktreeDoc(o.worktree.branch, o.worktree.repo) : ''].filter(Boolean).join('\n\n');
           refreshContextFiles(event.systemPromptOptions);
         });
         pi.on('before_provider_request', async (event, ctx) => {
@@ -344,11 +386,15 @@ export class Children {
     await loader.reload();
     const { session } = await (this.options.createSession ?? createAgentSession)({ cwd: directory, resourceLoader: loader, settingsManager,
       model: o.model, thinkingLevel: o.thinking, sessionManager: o.sessionManager,
-      customTools: [...memoryTools(() => memory, run => this.transcript(run, id)), ...(memorySearch ? [searchTool(() => memory)] : []), ...(delegates ? [...this.delegationTools(id, directory, subagentLevels, maxAgents), modelsTool(() => this)] : []), this.parentTool(id, parentId)],
-      excludeTools: delegates ? [] : ['spawn', 'tell', 'models'],
+      customTools: [...(o.memory ? memoryTools(() => memory, run => this.transcript(run, id)) : []), ...(o.memory && memorySearch ? [searchTool(() => memory)] : []), ...(delegates ? [...this.delegationTools(id, directory, subagentLevels, maxAgents), modelsTool(() => this)] : []), this.parentTool(id, parentId)],
+      excludeTools: [...delegates ? [] : ['spawn', 'tell', 'models'], ...readonly ? READ_ONLY_EXCLUDED : []],
     });
     // Callers track the session only after this returns: clean up here if its extensions fail to start.
-    try { await session.bindExtensions({}); }
+    try {
+      await session.bindExtensions({});
+      // Pi's default tools are read, bash, edit and write; a read-only child trades edit and write for Pi's read-only search tools.
+      if (readonly) session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), ...READ_ONLY_ADDED])]);
+    }
     catch (error) { await this.shutdown(session); this.dispose(session); throw error; }
     return session;
   }
@@ -472,7 +518,11 @@ export class Children {
       for (const g of info.guidance) if (g.state === 'queued') g.state = 'undelivered';
       await this.shutdown(session);
       // A failed dispose must neither keep the slot taken nor drop the report below.
-      this.dispose(session); this.running.delete(info.id);
+      this.dispose(session);
+      // While this runs the run still counts as live, so a tell can't resume it into a worktree being removed. A run cut off
+      // by Pi closing keeps its worktree as it is, to go on in it at the next start.
+      if (info.worktree && !(info.cutOff && info.state === 'stopped')) info.report = `${info.report ?? ''}\n\n${await this.settleWorktree(info, info.worktree)}`;
+      this.running.delete(info.id);
     }
     if (info.cutOff) {
       // Aborted by Pi closing, not by anyone's choice: no report now, the next start resumes it.
@@ -487,6 +537,15 @@ export class Children {
     try { this.save(info); } catch (error) { this.warn(`Could not save run metadata: ${String(error)}`); }
     // A deleted run's transcript is gone.
     await this.deliver(info, live.batch, `[${info.id}] ${info.report}${this.deleting.has(info.id) ? '' : `\n\n${fullChat(info.id)}`}`);
+  }
+  /** Commits a settled run's changes on its branch and removes its worktree; never throws, since the report must still go out. */
+  private async settleWorktree(info: RunInfo, tree: Worktree) {
+    const title = info.task.trim().split('\n')[0].slice(0, 60);
+    try { return await finishWorktree(tree, `OptChat subagent ${info.id}${info.role ? ` (${info.role})` : ''}: ${title}`); }
+    catch (error) {
+      this.warn(`Could not settle the worktree of ${info.id}: ${String(error)}`);
+      return `Its worktree ${tree.path} (branch ${tree.branch}) could not be committed and removed, so it was left as it is: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
   /** Sends a run's report to its parent; in a grouped spawn, only once every child of the spawn has one. */
   private async deliver(info: RunInfo, batch: LiveRun['batch'], text: string) {
@@ -594,14 +653,24 @@ export class Children {
     let manager: SessionManager | undefined;
     try { if (run.sessionFile && existsSync(run.sessionFile)) manager = SessionManager.open(run.sessionFile); } catch { manager = undefined; }
     if (!manager?.getEntries().some(e => e.type === 'message')) throw new Error(`The saved transcript of ${id} is missing or unreadable, so it cannot be resumed. Spawn a fresh subagent and give it the context it needs.`);
-    if (!existsSync(run.cwd) || !statSync(run.cwd).isDirectory()) throw new Error(`${id}'s directory ${run.cwd} no longer exists, so it cannot be resumed. Spawn a fresh subagent instead.`);
     const model = this.find(run.model);
     if (!model) throw new Error(`${id}'s model ${run.model} is not available, so it cannot be resumed. Spawn a fresh subagent instead.`);
+    // A worktree is removed when its run settles; resuming the run brings it back on the same branch.
+    if (run.worktree) {
+      this.resuming.add(id); // A second tell meanwhile is told it is still finishing.
+      try { await reopenWorktree(run.worktree); }
+      catch (error) { throw new Error(`${id}'s worktree could not be restored (${error instanceof Error ? error.message : String(error)}), so it cannot be resumed. Spawn a fresh subagent instead.`); }
+      finally { this.resuming.delete(id); }
+      if (this.closing) throw new Error('Profile is closing.');
+    }
+    if (!existsSync(run.cwd) || !statSync(run.cwd).isDirectory()) throw new Error(`${id}'s directory ${run.cwd} no longer exists, so it cannot be resumed. Spawn a fresh subagent instead.`);
     this.launching++; this.resuming.add(id);
     let reserved = true;
     try {
       // No thinking level: the session restores the one it ran with.
-      const session = await this.open({ id, directory: run.cwd, depth: run.depth, parentId: run.parentId, model, sessionManager: manager });
+      // Runs saved before these options existed had all tools and memory on.
+      const session = await this.open({ id, directory: run.cwd, depth: run.depth, parentId: run.parentId, model, sessionManager: manager,
+        tools: run.tools ?? 'all', memory: run.memory ?? true, worktree: run.worktree });
       // stop() cannot see this child until it is registered, so a parent stopped meanwhile must cancel it here.
       const parent = run.parentId ? this.running.get(run.parentId) : undefined;
       if (this.closing || run.parentId && (!parent || !['running', 'waiting', 'paused'].includes(parent.info.state))) {

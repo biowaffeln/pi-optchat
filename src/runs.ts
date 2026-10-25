@@ -5,6 +5,8 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { atomicWrite } from './store.ts';
 import { record } from './cache.ts';
 import { textContent } from './transcript.ts';
+import { TOOL_SETS, type ToolSet } from './roles.ts';
+import type { Worktree } from './worktree.ts';
 
 /** `paused`: interrupted by the user with nothing queued, alive and waiting for its next message. `interrupted` is a finished run cut off by Pi closing. */
 export const runStates = ['running', 'waiting', 'stopping', 'completed', 'failed', 'stopped', 'interrupted', 'paused'] as const;
@@ -16,6 +18,10 @@ export interface RunInfo {
   state: RunState; report?: string;
   /** Working when Pi closed or crashed: the next start resumes it (see `Children.resumeCutOff`). */
   cutOff?: boolean;
+  /** Spawn options, kept so a resumed run gets them again. Missing on runs saved before they existed: no role, all tools, memory on, no isolation. */
+  role?: string; tools?: ToolSet; memory?: boolean;
+  /** Set for isolation "worktree": the child's own worktree and branch. `cwd` is inside `worktree.path`. */
+  worktree?: Worktree;
   /** `from` is missing on runs saved before senders were recorded. */
   guidance: { text: string; date: number; state: 'queued' | 'delivered' | 'undelivered'; from?: 'user' | 'manager' }[];
 }
@@ -45,6 +51,10 @@ function isRun(value: unknown): value is RunInfo {
     && (value.sessionFile === undefined || typeof value.sessionFile === 'string')
     && (value.report === undefined || typeof value.report === 'string')
     && (value.cutOff === undefined || typeof value.cutOff === 'boolean')
+    && (value.role === undefined || typeof value.role === 'string')
+    && (value.tools === undefined || TOOL_SETS.includes(value.tools as ToolSet))
+    && (value.memory === undefined || typeof value.memory === 'boolean')
+    && (value.worktree === undefined || record(value.worktree) && ['repo', 'path', 'branch', 'base'].every(k => typeof (value.worktree as Record<string, unknown>)[k] === 'string'))
     && typeof value.depth === 'number' && Number.isInteger(value.depth) && value.depth >= 1
     && (value.parentId === undefined || typeof value.parentId === 'string')
     && Array.isArray(value.guidance) && value.guidance.every(g => record(g) && typeof g.text === 'string' && typeof g.date === 'number' && ['queued', 'delivered', 'undelivered'].includes(String(g.state)) && (g.from === undefined || g.from === 'user' || g.from === 'manager'));

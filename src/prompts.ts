@@ -1,3 +1,4 @@
+import { rolesDoc, type Roles } from './roles.ts';
 import type { ModelChoice } from './compactor.ts';
 import { NODE, start, type Part } from './memory.ts';
 
@@ -80,8 +81,10 @@ that choice is irrelevant: don't think about it. Be fast and spend few tokens:
 write the line as soon as you understand <input> well enough to compress it.`;
 /** Names the profile's subagent choice, so the agent has no gap to fill from memory when it spawns: unset means this
  * model, and the ids it knows from training drift, so the models tool is the only source for a named one. */
-export const modelsHint = ({ provider, model, thinking }: ModelChoice) =>
-  `Subagents run ${provider}/${model} at thinking ${thinking}: leave a task's model and thinking unset for that. Set either one only when the user asks for it. A named model takes its id from models(), never from memory: your training may not know the newest ones, and a family without a version ("Opus", "GPT") means the newest one.`;
+export const modelsHint = ({ provider, model, thinking }: ModelChoice, roles: Roles = {}) => {
+  const doc = rolesDoc(roles);
+  return `Subagents run ${provider}/${model} at thinking ${thinking}: leave a task's model and thinking unset for that${doc ? ', or pick a role' : ''}. Set model or thinking yourself only when the user asks for it. A named model takes its id from models(), never from memory: your training may not know the newest ones, and a family without a version ("Opus", "GPT") means the newest one.${doc ? `\n\n${doc}` : ''}`;
+};
 /** Labels the line naming running agents, last in every main-agent request while any run (src/transcript.ts); never stored. */
 export const AT_WORK = '[OptChat status] Agents at work now: ';
 export const MASTER = `You are OptChat, an AI agent that works for one user in a single chat that
@@ -136,6 +139,26 @@ until you have it whole, before any other source, and before you act, guess or
 ask. Never grep or search memories manually; zoom is your only
 allowed mechanism to navigate the tree. Summaries keep little of tool output, so
 say in your reply what you learned that will matter later.`;
+/** The subagent preamble for a task spawned with memory off: no view, no zoom or date, just the task. */
+export const SUBAGENT_NO_MEMORY = `You are a subagent of OptChat, an AI agent that works for one user in a
+single chat that never ends. OptChat gave you a task. Do it yourself, with
+your tools, following the user's instructions at the end of this
+prompt: they say who the user is, how their files are organized and how
+they want work done.
+
+Your first message is your task. You do not see OptChat's memory: the task
+holds all the context you get, so work from it and from the files. Your
+final reply is your report to OptChat. OptChat may send you more messages, even
+while you work.
+
+Be aware of time. When your task is long, tell OptChat how far you are with
+tell_parent. Before you wait on something slow, such as CI, say so the same
+way ("pushed, now watching CI until it passes"), so OptChat can go on
+without you, then watch it.`;
+/** Added to a read-only subagent's instructions. Bash stays, so this is a rule it is asked to keep, not a sandbox. */
+export const READ_ONLY = 'You are read-only: you have no edit or write tools. Do not change files in any other way either (no bash redirects, sed -i, git commit, package installs); report what should change instead.';
+/** Added to a subagent's instructions when it runs in its own git worktree. */
+export const worktreeDoc = (branch: string, repo: string) => `You work in your own git worktree on branch ${branch}, made from the current HEAD of ${repo}. Change files freely there; the main checkout is not affected. When you finish, whatever you changed is committed on ${branch} for the user to review, so you need not commit yourself (you may, if the task asks for separate commits). Do not push, merge or switch branches.`;
 export const SUBAGENT = `You are a subagent of OptChat, an AI agent that works for one user in a
 single chat that never ends. OptChat gave you a task. Do it yourself, with
 your tools, following the user's instructions at the end of this
@@ -174,7 +197,7 @@ export const IMPORT_GUIDANCE = `Entries marked Historical are imported records, 
 
 // Subagent instructions, joined after the user's own (AGENTS.md etc.): one of the two delegation paragraphs,
 // then STEERABLE, then the tell_parent paragraph.
-export const delegation = (maxAgents: number, choice: ModelChoice) => `You may delegate parts of your assigned task with spawn when useful. Child reports arrive automatically after your current run ends; the harness keeps you alive to receive them. Never poll, sleep, or wait in a tool for children. Finish your current work and return; you will be prompted with their results. The profile allows ${maxAgents} active agents total. ${modelsHint(choice)}`;
+export const delegation = (maxAgents: number, choice: ModelChoice, roles: Roles = {}) => `You may delegate parts of your assigned task with spawn when useful. Child reports arrive automatically after your current run ends; the harness keeps you alive to receive them. Never poll, sleep, or wait in a tool for children. Finish your current work and return; you will be prompted with their results. The profile allows ${maxAgents} active agents total. ${modelsHint(choice, roles)}`;
 export const NO_DELEGATION = 'You are at the maximum delegation depth. Complete your task with your own tools.';
 /** Pi hands steering to a run only between tool calls, so one long command keeps the parent and the user from reaching it. */
 export const STEERABLE = 'Never block in a single command for more than about 60 seconds. To wait for something, poll in short separate tool calls (for example one `sleep 30` per call), so messages from your parent or the user can reach you between calls.';

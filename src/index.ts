@@ -9,6 +9,7 @@ import { Memory, type Compressor } from './memory.ts';
 import { atomicWrite } from './store.ts';
 import { createCompressor, type ModelChoice } from './compactor.ts';
 import { createProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, profilePath, rememberProfile, saveConfig, type ProfileConfig } from './profiles.ts';
+import { DEFAULT_ROLES } from './roles.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, MASTER, modelsHint, PEERS_DOC, SEARCH_DOC, TURN_REFRESHED, VIEW_DOC } from './prompts.ts';
 import { cachePayload, record } from './cache.ts';
 import { saveImages } from './images.ts';
@@ -322,7 +323,7 @@ export default function optchat(pi: ExtensionAPI) {
       const recoveredInputs = pendingImport(dir) ? 0 : inbox.recover(memory);
       if (recoveredInputs) ctx.ui.notify(`Recovered ${recoveredInputs} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
       const children = new Children(memory, ctx.modelRegistry, () => config.subagent, () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}`,
-        deliverReport, text => ctx.ui.notify(text, 'error'), started.dir, { parentSession: sessionId, usage, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports });
+        deliverReport, text => ctx.ui.notify(text, 'error'), started.dir, { parentSession: sessionId, usage, builtins: () => loadedBuiltins(pi), settings: () => config, roles: () => config.roles ?? DEFAULT_ROLES, hold: holdReports });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
       // Reports a crash held back with their unfinished siblings are delivered now, as they are.
       reports = saved.map(s => typeof s === 'string' ? { text: s } : { text: s.text, count: s.count })
@@ -446,7 +447,7 @@ export default function optchat(pi: ExtensionAPI) {
     const a = required();
     // Pi's own prompt sections (AGENTS.md files, skills, cwd) stay; the profile's instructions go last.
     syncSearch(a.config);
-    event.systemPromptOptions.customPrompt = allowSearch(`${MASTER}\n\n${modelsHint(a.config.subagent)}\n\n${PEERS_DOC}\n\n${VIEW_DOC}${a.config.previousExchange ? CONTINUITY : ''}${a.config.memorySearch ? SEARCH_DOC : ''}`, a.config.memorySearch);
+    event.systemPromptOptions.customPrompt = allowSearch(`${MASTER}\n\n${modelsHint(a.config.subagent, a.config.roles ?? DEFAULT_ROLES)}\n\n${PEERS_DOC}\n\n${VIEW_DOC}${a.config.previousExchange ? CONTINUITY : ''}${a.config.memorySearch ? SEARCH_DOC : ''}`, a.config.memorySearch);
     event.systemPromptOptions.sections.instructions = `${instructions(a.dir)}\n\n${IMPORT_GUIDANCE}`;
     refreshContextFiles(event.systemPromptOptions);
     prompt = event.systemPrompt;
@@ -601,7 +602,7 @@ export default function optchat(pi: ExtensionAPI) {
     if (tools.includes('search') !== memorySearch) pi.setActiveTools(memorySearch ? [...tools, 'search'] : tools.filter(name => name !== 'search'));
   };
   pi.registerTool({ name: 'spawn', label: 'Spawn background agents',
-    description: 'Start background subagents, returning IDs immediately. Use only when the user asks. Give each task the cwd of the project it works on, so the subagent starts there with that project\'s AGENTS.md. Leave a task\'s model unset for the profile\'s default; name one only when the user asks, with an id from models(). Each receives the current memory view and read-only zoom/date. Whether children may delegate further, and how many agents may run at once, is set per profile. Completion reports arrive automatically; never poll or sleep waiting for them.',
+    description: 'Start background subagents, returning IDs immediately. Use only when the user asks. Give each task the cwd of the project it works on, so the subagent starts there with that project\'s AGENTS.md. A task may pick a role from your instructions (it presets model, thinking, tools and memory); leave model and thinking unset otherwise, and name a model only when the user asks, with an id from models(). Each receives the current memory view and read-only zoom/date unless memory is false. tools "readonly" drops edit and write but keeps bash, so it is not a sandbox. isolation "worktree" runs the task in its own git worktree and branch. Whether children may delegate further, and how many agents may run at once, is set per profile. Completion reports arrive automatically; never poll or sleep waiting for them.',
     parameters: Type.Object({ tasks: TASKS }),
     async execute(_id, args, signal, _update, ctx) {
       const text = await required().children.start(args.tasks, ctx.cwd, signal); status(ctx);
