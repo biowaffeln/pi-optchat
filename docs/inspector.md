@@ -13,7 +13,6 @@ Press **D** twice to delete the selected agent and the agents it started, with t
 - An agent that is still working is stopped first, and its stop report reaches its parent before it is deleted. The report tells the parent that you dropped the task, so it does not delegate it again.
 - Deleting a finished agent sends no report, so memory logs `[id] deleted by the user` right away, without a model turn.
 - The main agent can no longer resume a deleted agent.
-- Deleting a connected window that is still open stops it like closing the window; its handoff still reaches the main agent, but the transcript the handoff points to is deleted.
 
 ### An agent's conversation
 

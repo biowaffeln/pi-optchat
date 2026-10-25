@@ -4,7 +4,7 @@ The README has the summary table. This page has the detail: what changed in each
 
 ## Prompts
 
-`src/prompts.ts` holds every prompt sent to a model (the recipe's four, the subagent instruction paragraphs, the compaction task and its retry, the handoff prompt, the import note), each with a comment on where it goes. Tool descriptions stay with their tools. The recipe's prompts are lightly adapted:
+`src/prompts.ts` holds every prompt sent to a model (the recipe's four, the subagent instruction paragraphs, the compaction task and its retry, the import note), each with a comment on where it goes. Tool descriptions stay with their tools. The recipe's prompts are lightly adapted:
 
 - **Main agent.** The turn rules are the revised recipe's (2026-10-08) word for word, with three changes:
   - its paragraph on computers is left out;
@@ -50,5 +50,5 @@ Each run's context is the memory view, the previous exchange, and your new messa
 3. **Memory search** (off by default). With the setting on, the agent also gets `search(text, before?)`: plain, case-insensitive text matching over the original messages, never the summaries (a summary can be wrong, and one fact repeats at every level of the tree), skipping logged zoom and search results. It returns 20 hits at a time, newest first, each with its id, the view line that holds it when that is a summary (`1234 (in 1024+256)`), its date and a snippet. `before: id` pages back, and `zoom(id, 1)` reads a hit. One line about it is added to the system prompt, and the rule that zoom is the only way through memory names search too. Turning it on or off changes the cached prompt once.
 4. **Large messages.** `zoom(id, 1)` returns a message over 25,000 characters in pages, `[showing characters 0-25000 of 92000; next page: offset 25000]`, and `offset`/`limit` read any part of one (used on a shorter message, the page adds a note that it fits in one zoom). The recipe returns it whole, where the 30,000-character tool output cap cut out its middle.
 5. **Turn refresh** (#146). Once the current turn's verbatim messages pass the Turn refresh threshold (30% by default), they move into memory and the turn goes on with a fresh window. 0% is off, as in the recipe. See "Long turns" in the README.
-6. **Profiles**, the **inspector**, the **usage ledger**, **import**, and **connected windows** are additions. Import adds historical-record guidance to the prompts.
+6. **Profiles**, the **inspector**, the **usage ledger**, **import**, **branches** and **peers** are additions (see the README for the last two). Import adds historical-record guidance to the prompts.
 7. **Not done**: computer use and hosting on an always-on machine.

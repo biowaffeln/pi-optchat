@@ -36,7 +36,7 @@ Each child reports to its parent as soon as it finishes, as one message starting
 Turn **Group subagent reports** on to have the children of one spawn report together: when the last of them finishes, their reports reach the parent as one message, `[id] report` each, in spawn order.
 
 - Each finished report is journaled right away, so if Pi dies before the rest finish, the reports it already has are delivered at the next start.
-- Messages sent with `tell_parent`, connected windows and their handoffs are never held back.
+- Messages sent with `tell_parent` are never held back.
 - A child resumed with `tell` reports on its own.
 
 ### How reports look
