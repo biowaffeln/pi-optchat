@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
 import { ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createCompressor } from '../src/compactor.ts';
-import { compaction } from '../src/prompts.ts';
+import { COMPACT, compaction } from '../src/prompts.ts';
 import { createHandoffSummarizer } from '../src/handoff.ts';
 import type { RunInfo } from '../src/runs.ts';
 import { bytes, NODE } from '../src/memory.ts';
@@ -120,4 +120,9 @@ test('handoffs clamp the compactor\'s thinking level too', async () => {
     assert.equal(await summarize(run, []), 'Handoff.');
     assert.equal(sent, 'low', 'the fixture asks for "off"');
   } finally { removeDir(dir); }
+});
+
+test('the compactor prompt ends with the recipe\'s note that this is a small job, to keep thinking short', () => {
+  assert.ok(COMPACT.endsWith('Be fast and spend few tokens:\nwrite the line as soon as you understand <input> well enough to compress it.'));
+  assert.ok(COMPACT.includes('This is a small, mechanical job: fit one message, or two lines, into one line\nof at most 512 bytes'));
 });

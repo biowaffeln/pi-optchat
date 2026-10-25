@@ -70,7 +70,13 @@ as "work:", and credit quoted text to its real author. Never make anything look
 further along than it was, and never narrate the process of summarizing
 ("output unseen", "read-only", "unconfirmed") unless that uncertainty is itself
 a fact OptChat must know. If told the line is too long, shorten it. Non-ASCII
-characters cost 2-4 bytes.`;
+characters cost 2-4 bytes.
+
+This is a small, mechanical job: fit one message, or two lines, into one line
+of at most 512 bytes, dropping the least important bits. Nothing else. Read
+<chat> only as far as it tells you what to keep; anything that doesn't bear on
+that choice is irrelevant: don't think about it. Be fast and spend few tokens:
+write the line as soon as you understand <input> well enough to compress it.`;
 /** Names the profile's subagent choice, so the agent has no gap to fill from memory when it spawns: unset means this
  * model, and the ids it knows from training drift, so the models tool is the only source for a named one. */
 export const modelsHint = ({ provider, model, thinking }: ModelChoice) =>

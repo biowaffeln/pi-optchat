@@ -11,7 +11,7 @@ The README has the summary table. This page has the detail: what changed in each
   - reports start `[id] ` instead of `[Name]`;
   - two sentences are added: don't poll anything slow (CI, a deploy) yourself, hand the watching to a subagent; and a message starting `[OptChat status]` is OptChat's own note, not the user.
 - **View doc.** Keeps the original's description of the view. It drops the "No message appears in full" line (untrue with Previous exchange on) and the list of when to zoom, adds one sentence on zooming out from a message to the summaries above it, and ends with the revised recipe's rule that the view is the truth and zoom the only way through it.
-- **Compactor.** The revised recipe's intro, view and Compactions sections, without its turn-only sections, and with:
+- **Compactor.** The revised recipe's intro, view and Compactions sections (with its closing note that compaction is a small, mechanical job to do fast with few tokens), without its turn-only sections, and with:
   - OptChat's kinds: `talk` for replies, subagent reports as `work`;
   - its value list reworded so the size limit is a ceiling rather than a target: bare approvals are recorded as the decision they made, lines don't narrate what wasn't seen yet, and a tool result is described by what its output shows rather than by a cause guessed from an exit code or an empty match. An A/B found less filler and no recall loss (#129).
 - **Compaction task and "Too long" retry.** The recipe's, verbatim, with a 512-dash ruler for the size.
