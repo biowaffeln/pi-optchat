@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { Memory } from '../src/memory.ts';
-import { openBranchMemory, startBranch } from '../src/branch.ts';
-import { lastLines, livePeers, notePeer, notesText, peersText, publishView, takeNotes } from '../src/peers.ts';
+import { openBranchMemory, recoverBranches, startBranch } from '../src/branch.ts';
+import { lastLines, livePeers, notePeer, notesText, peersText, publishTurn, publishView, takeNotes, turnLines } from '../src/peers.ts';
 
 const silent = () => {};
 const compress = async () => 'a line';
@@ -57,4 +57,31 @@ test('a published view is what ask_peer reads', async () => {
     const { readFileSync } = await import('node:fs');
     assert.equal(readFileSync(`${b.dir}/view.txt`, 'utf8'), b.memory.render());
   } finally { await a.memory.close(); await b.memory.close(); await a.release(); await b.release(); }
+});
+
+test('a running turn is published as short lines, newest last and bounded, and cleared when it ends', () => {
+  const dir = mkdtempSync('/tmp/oc-peer-');
+  const user = (text: string) => ({ role: 'user' as const, content: text, timestamp: 0 });
+  publishTurn(dir, [user('migrating billing to postgres 17'), user(`long ${'x'.repeat(2000)}`)]);
+  const lines = turnLines(dir);
+  assert.equal(lines[0], 'user: migrating billing to postgres 17');
+  assert.ok(lines[1].endsWith('...') && Buffer.byteLength(lines[1]) <= 515, 'a long message is cut to one line');
+  publishTurn(dir, Array.from({ length: 100 }, (_, k) => user(`${k} ${'y'.repeat(400)}`)));
+  const many = turnLines(dir);
+  assert.ok(many.join('\n').length <= 16_000 && many.at(-1)!.startsWith('user: 99 '), 'the newest are kept');
+  publishTurn(dir, []);
+  assert.deepEqual(turnLines(dir), []);
+});
+
+test('a note no input carried goes into the receiving session\'s memory when it closes, or when a crashed one is recovered', async () => {
+  const { profile, a, b } = await setup();
+  try {
+    await notePeer(profile, { id: a.info.id, cwd: '/work/a' }, b.info.id, 'heads up: the schema changed');
+    // b's Pi died: its lock is gone, it never closed.
+    await b.memory.close(); await b.release();
+    assert.deepEqual(await recoverBranches(profile, silent), [b.info.id]);
+    const trunk = new Memory(profile, compress, silent);
+    try { assert.ok(trunk.root.some(e => e.kind === 'user' && e.text === `[note from ${a.info.id} (/work/a)] heads up: the schema changed`)); }
+    finally { await trunk.close(); }
+  } finally { await a.memory.close(); await a.release(); }
 });

@@ -4,7 +4,7 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
+import { createAssistantMessageEventStream, type AssistantMessage, type ToolCall } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionUIContext } from '@earendil-works/pi-coding-agent';
 import optchat from '../src/index.ts';
 import { Memory } from '../src/memory.ts';
@@ -48,7 +48,7 @@ async function session(name: string, cwd = root) {
       const asked = prompt.includes('</chat>') ? prompt.slice(prompt.lastIndexOf('</chat>') + 7).trim() : prompt;
       // "call <tool> <json>; <tool> <json>" makes the model call those tools, then answer with their results.
       const calls = !compaction && /^call /.test(asked) && context.messages.at(-1)?.role === 'user'
-        ? asked.slice(5).split('; ').map((c, k) => ({ type: 'toolCall' as const, id: `call-${k}`, name: c.slice(0, c.indexOf(' ')), arguments: JSON.parse(c.slice(c.indexOf(' ') + 1)) as Record<string, unknown> })) : [];
+        ? asked.slice(5).split('; ').map((c, k) => ({ type: 'toolCall' as const, id: `call-${k}`, name: c.slice(0, c.indexOf(' ')), arguments: JSON.parse(c.slice(c.indexOf(' ') + 1)) as ToolCall['arguments'] })) : [];
       const results = context.messages.flatMap(m => m.role === 'toolResult' ? [textContent(m.content)] : []);
       const text = compaction ? 'a summary line' : results.length ? `Results: ${results.join(' | ')}` : `OK to: ${asked}`;
       const message: AssistantMessage = { role: 'assistant', content: calls.length ? calls : [{ type: 'text', text }], stopReason: calls.length ? 'toolUse' : 'stop',

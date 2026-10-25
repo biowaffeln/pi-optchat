@@ -7,6 +7,7 @@ import { memoryDirectory } from './import/job.ts';
 import { holder, lockPath, takeLock, withLock } from './locks.ts';
 import { bytes, end, flat, isEntry, Memory, start, type Entry, type Compressor, type Kind, type Summary } from './memory.ts';
 import { sessionMessages } from './runs.ts';
+import { notesText, takeNotes } from './peers.ts';
 import { reportReceipt } from './transcript.ts';
 import { atomicWrite, FileStore, type Mime, type Saved, type Store } from './store.ts';
 
@@ -256,6 +257,8 @@ export async function recoverBranches(profile: string, warn: (text: string) => v
         const text = typeof item === 'string' ? item : String(item.text);
         log('work', text, new Date().toISOString(), reportReceipt(text));
       }
+      // Notes other sessions left that no input carried. Taking them moves the read mark, so a second recovery doesn't add them again.
+      for (const note of takeNotes(dir)) log('user', notesText([note]), note.date, `note:${note.from}:${note.date}`);
       await mergeBranch(profile, dir, info, entries, saved.tree.filter(isNode), info.closing ? 'close' : 'interrupted', warn);
       for (const name of ['pending-inputs.json', 'pending-reports.json']) if (existsSync(join(dir, name))) writeFileSync(join(dir, name), '[]');
       closeInfo(dir, info);

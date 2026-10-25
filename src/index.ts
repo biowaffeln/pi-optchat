@@ -15,7 +15,7 @@ import { saveImages } from './images.ts';
 import { asUser, boundedMessage, atWork, buildContext, logMessage, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, textContent, typedText } from './transcript.ts';
 import { registerReportRenderer, type ReportDetails } from './report-message.ts';
 import { memoryTools, result, searchTool } from './tools.ts';
-import { askPeer, lastLines, livePeers, notePeer, notesText, peersText, publishView, takeNotes } from './peers.ts';
+import { askPeer, lastLines, livePeers, notePeer, notesText, peersText, publishTurn, publishView, takeNotes, turnLines } from './peers.ts';
 import { Children, loadedBuiltins, modelsTool, refreshContextFiles, TASKS } from './agents.ts';
 import { isActiveRun, type RunInfo } from './runs.ts';
 import { exportBrowser } from './browser.ts';
@@ -210,6 +210,8 @@ export default function optchat(pi: ExtensionAPI) {
         const logged = new Set(old.memory.root.map(e => e.receipt));
         for (const r of reports) if (!logged.has(reportReceipt(r.text))) old.memory.append('work', r.text, undefined, reportReceipt(r.text));
         reports = []; saveReports();
+        // So do notes from other sessions that no input of this one carried.
+        for (const note of takeNotes(old.branch.dir)) old.memory.append('user', notesText([note]), note.date);
       }
       // No checkpoint here: a host may kill Pi a second after asking it to stop (#220). The next turn's checkpoint commits what this wrote.
       await old.memory.close(); await checkpoints;
@@ -418,7 +420,10 @@ export default function optchat(pi: ExtensionAPI) {
   const share = (ctx: ExtensionContext) => {
     const a = active;
     if (!a) return;
-    try { a.branch.setStatus({ cwd: ctx.cwd, pid: process.pid, created: a.branch.info.created, working, lines: lastLines(a.memory.render()) }); }
+    try {
+      const lines = [...lastLines(a.memory.render()), ...turnLines(a.branch.dir).map(line => `(this turn) ${line}`)].slice(-4);
+      a.branch.setStatus({ cwd: ctx.cwd, pid: process.pid, created: a.branch.info.created, working, lines });
+    }
     catch { /* a status is a courtesy */ }
   };
   const startRun = (ctx: ExtensionContext) => {
@@ -476,6 +481,7 @@ export default function optchat(pi: ExtensionAPI) {
       } catch (error) { ctx.abort(); fault = errorText(error); ctx.ui.notify(fault, 'error'); }
     }
     run.push(message);
+    try { publishTurn(active.branch.dir, run); share(ctx); } catch { /* peers see less of this turn */ }
     if (view !== undefined) {
       try { flush(); } catch (error) { ctx.abort(); fault = errorText(error); ctx.ui.notify(fault, 'error'); }
     }
@@ -545,7 +551,7 @@ export default function optchat(pi: ExtensionAPI) {
     if (runStarted) pi.appendEntry(RUN_BOUNDARY, { state: 'end' });
     runStarted = false; status(ctx);
     working = false; showTitle(ctx);
-    if (active) try { publishView(active.branch.dir, active.memory.render()); } catch { /* peers see the last one */ }
+    if (active) try { publishView(active.branch.dir, active.memory.render()); publishTurn(active.branch.dir, []); } catch { /* peers see the last one */ }
     share(ctx);
     if (active) {
       const dir = active.dir;

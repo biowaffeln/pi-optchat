@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { appendLine, branchDirectory, listBranches, liveStatus } from './branch.ts';
 import { cachePayload, record } from './cache.ts';
 import { reasoningFor, retryTransient, type ModelChoice } from './compactor.ts';
@@ -20,12 +21,33 @@ import { textContent } from './transcript.ts';
 export const NOTE_BYTES = 280;
 /** How many of a peer's last view lines `peers` shows. */
 export const PEER_LINES = 4;
-const VIEW_FILE = 'view.txt', NOTES = 'notes.jsonl', READ = 'notes.read';
+const VIEW_FILE = 'view.txt', TURN_FILE = 'turn.txt', NOTES = 'notes.jsonl', READ = 'notes.read';
+/** How much of a running turn a branch shows its peers: its last lines, each cut to a line's size. */
+const TURN_BYTES = 16_000, TURN_LINE = 512;
 
 export interface Note { from: string; cwd: string; text: string; date: string }
 
 /** Rewrites what a live branch shows its peers: its rendered view. */
 export function publishView(dir: string, view: string) { atomicWrite(join(dir, VIEW_FILE), view); }
+/** A running turn's messages as short "kind: text" lines, newest last, about TURN_BYTES at most: what the view doesn't
+ * have yet. Written as the turn goes and removed when it ends, by which time the view has it. */
+export function publishTurn(dir: string, messages: readonly AgentMessage[]) {
+  const lines = messages.flatMap(m => {
+    if (m.role === 'user') return [`user: ${textContent(m.content)}`];
+    if (m.role === 'assistant') return m.content.flatMap(b => b.type === 'text' && b.text.trim() ? [`talk: ${b.text}`] : b.type === 'toolCall' ? [`tool: ${b.name} ${JSON.stringify(b.arguments)}`] : []);
+    if (m.role === 'toolResult') return [`echo: ${m.toolName}: ${textContent(m.content, false)}`];
+    return [];
+  }).map(line => { const one = flat(line); return bytes(one) > TURN_LINE ? `${Buffer.from(one).subarray(0, TURN_LINE).toString('utf8').replace(/\uFFFD+$/, '')}...` : one; });
+  let size = 0, from = lines.length;
+  while (from > 0 && size + bytes(lines[from - 1]) + 1 <= TURN_BYTES) size += bytes(lines[--from]) + 1;
+  if (from === lines.length) rmSync(join(dir, TURN_FILE), { force: true });
+  else atomicWrite(join(dir, TURN_FILE), lines.slice(from).join('\n'));
+}
+/** The running turn a branch published, as lines; none between turns. */
+export function turnLines(dir: string) {
+  try { return readFileSync(join(dir, TURN_FILE), 'utf8').split('\n').filter(Boolean); } catch { return []; }
+}
+
 /** The last `count` lines of a rendered view. */
 export function lastLines(view: string, count = PEER_LINES) {
   return view.split('\n').filter(line => /^\d+\+\d+\|/.test(line)).slice(-count);
@@ -91,6 +113,8 @@ export async function askPeer(profile: string, self: string, id: string, questio
   const dir = await livePeer(profile, id, self);
   let view: string;
   try { view = readFileSync(join(dir, VIEW_FILE), 'utf8'); } catch { throw new Error(`Session ${id} hasn't published its view yet; ask again after its next turn.`); }
+  const turn = turnLines(dir);
+  if (turn.length) view += `\n\nIts turn in progress, newest last (not in the view yet):\n${turn.join('\n')}`;
   const model = registry.find(choice.provider, choice.model);
   if (!model) throw new Error(`Model unavailable: ${choice.provider}/${choice.model}. Use /optchat model.`);
   const reply = await retryTransient(() => registry.streamSimple(model, {
