@@ -98,6 +98,8 @@ Compression and subagents make extra model requests with your provider credentia
 
 Numbers must be whole numbers of at least 1 (512 for the summary size tolerance, at most 64 for Summaries at once); Turn refresh threshold is a percentage from 0% to 90%. Missing keys in an older `config.json` take their defaults.
 
+**Subagent roles** are not on the settings page: they live under `roles` in `config.json` (see [Subagents](#subagents)).
+
 **Upgrading from 0.6.x:** subagent levels used to be fixed at 3 and now default to 1, so subagents no longer start their own subagents until you set Subagent levels to 2 or 3.
 
 ![Settings page](docs/screenshots/settings.png)
@@ -109,12 +111,25 @@ Ask in plain words, for example: "Spawn an agent to investigate this repository 
 - **What they get**: the profile's memory view (frozen at launch) and instructions, read-only `zoom`/`date`, normal coding tools, your installed extensions, and your MCP servers.
 - **Reports**: each child reports when it finishes, as one message starting `[id]`, shown in a dark grey `↳ subagent <id>` box. Turn on **Group subagent reports** to get one message per spawn instead.
 - **Model**: children run the profile's subagent model. Ask for another in your request ("review it with anthropic/claude-haiku-5-5 at low") and the agent sets that task's `model` and `thinking`.
+- **Roles**: a task can name a role that presets its model, thinking, tools and memory. The built-in ones are `scout` (GPT-6 Luna, low, read-only, no memory), `implementer` (the subagent model, all tools), `reviewer` (Opus 5.5, high, read-only) and `elder` (Opus 5.5, xhigh, read-only). The agent picks a role on its own when one fits; fields set on the task win over the role. To change them, put a `roles` object in the profile's `config.json`; it replaces the built-in list as a whole:
+
+  ```json
+  "roles": {
+    "reviewer": { "description": "Reviews diffs for bugs.", "model": "anthropic/claude-sonnet-5-5", "thinking": "high", "tools": "readonly" },
+    "writer": { "description": "Drafts docs.", "memory": false }
+  }
+  ```
+
+  Each role needs a `description` (shown to the agent); `model`, `thinking`, `tools` (`all` or `readonly`) and `memory` are optional. Edits apply after `/reload`. A role whose model you aren't logged in to fails the spawn rather than running on another model.
+- **Read-only**: `tools: "readonly"` leaves out the `edit` and `write` tools and adds `grep`, `find` and `ls`. Bash and your extensions' tools stay, so this is a strong hint, not a sandbox: a read-only child could still write with bash. The children of a read-only child are read-only too.
+- **No memory**: `memory: false` gives the child only its task, AGENTS.md files and skills: no memory view, no `zoom` or `date`.
+- **Worktrees**: `isolation: "worktree"` runs the child in its own git worktree, on a new branch `optchat/<id>` from the current HEAD of the repository that holds its directory. When it finishes, its changes are committed on that branch and the worktree is removed; its report names the branch. A child that changed nothing leaves no branch.
 - **Talking**: the parent sends guidance with `tell`; the child messages its parent mid-run with `tell_parent`. `tell` to a finished child resumes it with its saved transcript.
 - **Limits**: by default only the main agent starts subagents. **Subagent levels** lets them delegate further, and **Max active agents** (8) caps how many run at once; going over returns an error, there is no queue.
 - **Stopping**: stopping an agent stops its whole subtree. Agents run inside the Pi process, so closing Pi stops them.
 - **Restarts**: agents cut off by a close, crash or `/reload` resume when the profile next opens in interactive Pi, and the main agent is told which. Ones you stopped or paused stay stopped.
 
-More (MCP inheritance, per-task models, report formats, the "agents at work" status line, resume rules): [docs/subagents.md](docs/subagents.md).
+More (MCP inheritance, per-task models, roles, read-only limits, worktree cleanup, report formats, the "agents at work" status line, resume rules): [docs/subagents.md](docs/subagents.md).
 
 ## Agents, usage and activity inspector
 
@@ -190,11 +205,13 @@ Profile data lives in `~/.optchat/profiles/<name>/` (override the root with `OPT
 | `active-memory.json`, `memories/<id>/` | After an import: pointer to the active `main/` and `tree/`. Older generations are kept. |
 | `imports/pending.json` | Resumable import state |
 | `AGENTS.md` | Profile instructions |
-| `config.json` | Main, compactor and subagent models, and settings |
+| `config.json` | Main, compactor and subagent models, settings, and optional subagent `roles` |
 | `branches/<id>/` | One per session: where it started, its own messages, nodes and view, its recovery journals and its subagents' runs ([docs/branches.md](docs/branches.md#files)) |
 | `runs/` | Subagent sessions from before branches |
 | `usage.jsonl` | Usage ledger |
 | `memory.html` | Snapshot from `/optchat browse` |
+
+Subagent worktrees live in `~/.optchat/worktrees/<id>/` while their run is open (see [docs/subagents.md](docs/subagents.md#worktrees)).
 
 - Each profile folder is a local Git repository, committed after each turn (sessions take turns). It has no remote, so it is not a backup: copy the folder while Pi is closed.
 - To delete a profile, delete its folder. Your original Pi sessions are kept in Pi's normal session directory.

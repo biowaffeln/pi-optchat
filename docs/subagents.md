@@ -4,7 +4,7 @@ The README covers the basics. This page has the rest.
 
 ## What a child gets
 
-- The profile's memory view (frozen at launch), its instructions, read-only `zoom`/`date`, and normal coding tools plus your installed extensions (except pi-optchat itself).
+- The profile's memory view (frozen at launch), its instructions, read-only `zoom`/`date`, and normal coding tools plus your installed extensions (except pi-optchat itself). A task with `memory: false` gets no view and no `zoom`/`date` (see [Memory](#memory)).
 - The Pi built-in extensions the main session loaded: MCP, codemode and tool search.
 
 ### MCP servers
@@ -22,6 +22,51 @@ Each task runs the profile's subagent model (`/optchat agents model`), unless th
 - The agent's instructions name the profile's subagent model and level, so it leaves a task's `model` unset unless you ask for another one. The `models` tool (`provider` optional) lists what a task may name, with the default marked; the agent is told to take ids only from it, never from memory, since the newest ids may postdate its training ("Opus" without a version means the newest).
 - A model Pi doesn't know refuses the whole spawn before any child starts, and the error lists the models you can use.
 - A resumed child keeps the model and level it ran with.
+
+## Roles
+
+A task's `role` presets its model, thinking, tools and memory in one go. The main agent's instructions list every role with its description and what it sets, and the agent may pick one whenever it fits the task, without being asked; it still sets `model` or `thinking` by hand only when you ask.
+
+Built in, used when the profile's `config.json` has no `roles`:
+
+| Role | Model | Thinking | Tools | Memory | For |
+| --- | --- | --- | --- | --- | --- |
+| `scout` | `openai-codex/gpt-6-luna` | low | read-only | off | Fast recon: finding files, tracing symbols |
+| `implementer` | subagent model | subagent level | all | on | Executing a well-specified brief |
+| `reviewer` | `anthropic/claude-opus-5-5` | high | read-only | on | Reviewing diffs and modules for bugs and risky assumptions |
+| `elder` | `anthropic/claude-opus-5-5` | xhigh | read-only | on | The hardest reasoning, debugging that resisted earlier attempts |
+
+- A `roles` object in `config.json` replaces this list as a whole (an empty object means no roles). Each entry is `{ "description": ..., "model"?: "provider/id", "thinking"?: ..., "tools"?: "all" | "readonly", "memory"?: boolean }`; names are lowercase letters, digits, `-` and `_`. A bad entry makes the profile refuse to open, with a message naming it. Edits apply after `/reload`.
+- Precedence, per field: what the task sets, then the role, then the profile (subagent model and level, all tools, memory on).
+- A role's model must be one Pi is logged in to. If it isn't, the whole spawn fails before any child starts, naming the task and the role; it never falls back to another model. Naming a `model` on the task gets around it.
+- A role is saved with the run and shown in the agent view's header, next to the model.
+
+## Read-only
+
+`tools: "readonly"` leaves Pi's `edit` and `write` tools out of the child and turns on `read`, `grep`, `find` and `ls`. The child is told it is read-only and should report what to change instead.
+
+What it does not stop:
+
+- **Bash stays**, so a read-only child can still change files with `echo >`, `sed -i`, `git commit` and so on. There is no command filter. Treat read-only as a strong hint that also removes the obvious tools, not as a sandbox.
+- **Extension tools stay.** Pi has no way to tell which extension tools change files, so ones that do (an AST rewrite tool, say) remain available.
+- The children of a read-only child are always read-only, whatever their task says.
+
+## Memory
+
+`memory: false` gives the child only its task text, plus the usual AGENTS.md files and skills. It gets no memory view, no `zoom`/`date` (so it can't read its own children's chats with `zoom` either) and no `search`, and its opening prompt says the task is all the context it has. Use it for self-contained briefs; it saves the view's tokens and keeps the child from being steered by the chat.
+
+## Worktrees
+
+`isolation: "worktree"` gives the child its own git worktree:
+
+- The task's directory must be inside a git repository with at least one commit; otherwise the whole spawn fails before any child starts.
+- OptChat runs `git worktree add -b optchat/<id> ~/.optchat/worktrees/<id> HEAD` in that repository (under `OPTCHAT_HOME` if set), and the child starts in the matching directory inside it (a task in `repo/sub` starts in `<worktree>/sub`). It is told its branch and not to push, merge or switch branches.
+- When the run settles (finished, failed, or stopped by you), OptChat stages everything (`git add -A`, so gitignored files stay out), commits what is uncommitted on the branch (with `--no-verify`, and as `OptChat <optchat@localhost>` if the repository has no identity), and removes the worktree. If the branch has any commit past its starting point (the child's own commits count), it is kept and the report ends with its name and commit count. Otherwise the branch is deleted too.
+- If the cleanup fails (a git error), the worktree is left as it is and the report says where.
+- If Pi closes, crashes or reloads while the child works, nothing is cleaned up: the worktree, uncommitted changes and all, stays, and the child resumes in it at the next start.
+- `tell` to a finished isolated child brings its worktree back on the same branch (or from its starting commit, if the branch was deleted), and cleans up again when it settles.
+- Deleting a run in the inspector doesn't delete its branch. Merge or delete `optchat/<id>` branches yourself.
+- The worktree path and branch are saved with the run and shown in the agent view's header.
 
 ## Reports
 
@@ -75,7 +120,7 @@ It lists the id and the first words of each task, so the main agent knows what i
 
 ## Resuming a finished child
 
-`tell` to a finished child resumes it: the same agent (ID, parent, model, directory) reopens its saved transcript, gets the message as a new prompt, and sends a new report.
+`tell` to a finished child resumes it: the same agent (ID, parent, model, directory, role, tools, memory and worktree) reopens its saved transcript, gets the message as a new prompt, and sends a new report.
 
 - This also works for children from earlier Pi sessions: a session that closes leaves its subagents to the next one that opens the profile (see [branches.md](branches.md)). Children of a session still open elsewhere belong to that session.
 - Only the agent that started the child can resume it, and the resumed child takes one active slot.
