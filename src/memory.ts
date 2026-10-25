@@ -236,7 +236,10 @@ export class Memory {
     if (!this.node(part)) this.unbuilt.add(i);
   }
   get view(): readonly Part[] { return this.chat.parts; }
-  render() { return `${VIEW_OPEN}${this.view.map(p => `${start(p)}+${2 ** p.l}|${flat(this.text(p))}`).join('\n')}\n</chat>`; }
+  render() { return `${VIEW_OPEN}${this.view.map(p => this.line(p)).join('\n')}\n</chat>`; }
+  /** The view's last `count` lines, as render() writes them, without rendering the rest. */
+  lastLines(count: number) { return this.view.slice(-count).map(p => this.line(p)); }
+  private line(p: Part) { return `${start(p)}+${2 ** p.l}|${flat(this.text(p))}`; }
   get ready() { return this.view.every(p => this.node(p)); }
   get pending() { return this.unbuilt.size; }
   get active() { return this.busy.size; }

@@ -192,3 +192,20 @@ test('peers lists the other open sessions; a note reaches the end of the peer\'s
     for (const s of [a, b]) assert.deepEqual(s.errors, []);
   } finally { await a.close(); await b.close(); }
 });
+
+test('a note waits for a plain input: not on a command, whose arguments it would join, and a closing peer takes none', async () => {
+  const name = profile();
+  const a = await session(name, '/tmp'), b = await session(name, root);
+  try {
+    await b.ask('beta works');
+    await a.ask(`call note_peer {"id":"${b.id()}","text":"wait for me"}`);
+    await b.ask('/optchat-nothing-like-this');
+    assert.doesNotMatch(b.sent.at(-1) ?? '', /wait for me/, 'not on an input that starts with a slash');
+    await b.ask('plain now');
+    assert.match(b.sent.at(-1)!, /plain now\n\n\[note from [0-9a-f]{6} \(\/tmp\)\] wait for me$/);
+    await a.ask(`call note_peer {"id":"${b.id()}","text":"left for later"}`);
+    await b.close();
+    assert.ok(trunkTexts(name).some(t => t === `[note from ${a.id()} (/tmp)] left for later`), 'the unread note went into b\'s memory as it closed');
+    assert.match(await a.ask(`call note_peer {"id":"${b.id()}","text":"too late"}`) ?? '', /not open/);
+  } finally { await a.close(); await b.close(); }
+});

@@ -15,7 +15,7 @@ import { saveImages } from './images.ts';
 import { asUser, boundedMessage, atWork, buildContext, logMessage, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, textContent, typedText } from './transcript.ts';
 import { registerReportRenderer, type ReportDetails } from './report-message.ts';
 import { memoryTools, result, searchTool } from './tools.ts';
-import { askPeer, lastLines, livePeers, notePeer, notesText, peersText, publishTurn, publishView, takeNotes, turnLines } from './peers.ts';
+import { askPeer, livePeers, notePeer, notesText, peekNotes, peersText, publishTurn, publishView, turnLines } from './peers.ts';
 import { Children, loadedBuiltins, modelsTool, refreshContextFiles, TASKS } from './agents.ts';
 import { isActiveRun, type RunInfo } from './runs.ts';
 import { exportBrowser } from './browser.ts';
@@ -200,6 +200,8 @@ export default function optchat(pi: ExtensionAPI) {
     clearInterval(idleTimer); idleTimer = undefined;
     if (!active) return;
     const old = active;
+    // Peers stop listing it and sending it notes from here on; the ones already sent go into its memory below.
+    try { old.branch.setStatus({ cwd: old.branch.info.cwd, pid: process.pid, created: old.branch.info.created, closing: true }); } catch { /* a status is a courtesy */ }
     try {
       await recovery;
       await old.children.close(); flush();
@@ -211,7 +213,9 @@ export default function optchat(pi: ExtensionAPI) {
         for (const r of reports) if (!logged.has(reportReceipt(r.text))) old.memory.append('work', r.text, undefined, reportReceipt(r.text));
         reports = []; saveReports();
         // So do notes from other sessions that no input of this one carried.
-        for (const note of takeNotes(old.branch.dir)) old.memory.append('user', notesText([note]), note.date);
+        const { notes, commit } = peekNotes(old.branch.dir);
+        for (const note of notes) old.memory.append('user', notesText([note]), note.date);
+        commit();
       }
       // No checkpoint here: a host may kill Pi a second after asking it to stop (#220). The next turn's checkpoint commits what this wrote.
       await old.memory.close(); await checkpoints;
@@ -405,24 +409,27 @@ export default function optchat(pi: ExtensionAPI) {
     }
     if (importing || pendingImport(active.dir)) { ctx.ui.notify('This profile has an import in progress. Use /optchat import to resume or discard it, or switch profiles.', 'info'); return { action: 'handled' }; }
     if (event.source !== 'extension') {
-      // Notes other sessions left go at the end of the next thing the user sends, so they never start a turn of their own.
+      // Notes other sessions left go at the end of the next thing the user sends, so they never start a turn of their own. Not
+      // on a queued input, which Esc can take back, nor on a command: Pi expands skills and templates after this, and a note
+      // would become part of their arguments.
       let text = event.text;
       try {
-        const notes = takeNotes(active.branch.dir);
+        const { notes, commit } = event.streamingBehavior === undefined && !text.trimStart().startsWith('/') ? peekNotes(active.branch.dir) : { notes: [], commit: () => {} };
         if (notes.length) text = `${text}\n\n${notesText(notes)}`;
         active.inbox.record(text, event.streamingBehavior !== undefined);
+        commit();
       } catch (error) { ctx.ui.notify(`Could not save input: ${errorText(error)}`, 'error'); return { action: 'handled' }; }
       if (text !== event.text) return { action: 'transform', text, images: event.images };
     }
     return { action: 'continue' };
   });
   /** What this session's lock tells peers: where it runs, whether it works, and its latest lines. */
-  const share = (ctx: ExtensionContext) => {
+  const share = (ctx: ExtensionContext, { turn, closing }: { turn?: string[]; closing?: boolean } = {}) => {
     const a = active;
     if (!a) return;
     try {
-      const lines = [...lastLines(a.memory.render()), ...turnLines(a.branch.dir).map(line => `(this turn) ${line}`)].slice(-4);
-      a.branch.setStatus({ cwd: ctx.cwd, pid: process.pid, created: a.branch.info.created, working, lines });
+      const lines = [...a.memory.lastLines(4), ...(turn ?? turnLines(a.branch.dir)).map(line => `(this turn) ${line}`)].slice(-4);
+      a.branch.setStatus({ cwd: ctx.cwd, pid: process.pid, created: a.branch.info.created, working, lines, ...closing ? { closing } : {} });
     }
     catch { /* a status is a courtesy */ }
   };
@@ -481,7 +488,7 @@ export default function optchat(pi: ExtensionAPI) {
       } catch (error) { ctx.abort(); fault = errorText(error); ctx.ui.notify(fault, 'error'); }
     }
     run.push(message);
-    try { publishTurn(active.branch.dir, run); share(ctx); } catch { /* peers see less of this turn */ }
+    try { share(ctx, { turn: publishTurn(active.branch.dir, run).slice(-4) }); } catch { /* peers see less of this turn */ }
     if (view !== undefined) {
       try { flush(); } catch (error) { ctx.abort(); fault = errorText(error); ctx.ui.notify(fault, 'error'); }
     }

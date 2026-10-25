@@ -37,11 +37,16 @@ export function publishTurn(dir: string, messages: readonly AgentMessage[]) {
     if (m.role === 'assistant') return m.content.flatMap(b => b.type === 'text' && b.text.trim() ? [`talk: ${b.text}`] : b.type === 'toolCall' ? [`tool: ${b.name} ${JSON.stringify(b.arguments)}`] : []);
     if (m.role === 'toolResult') return [`echo: ${m.toolName}: ${textContent(m.content, false)}`];
     return [];
-  }).map(line => { const one = flat(line); return bytes(one) > TURN_LINE ? `${Buffer.from(one).subarray(0, TURN_LINE).toString('utf8').replace(/\uFFFD+$/, '')}...` : one; });
+  }).map(line => {
+    // Cut before flattening: a tool result can be 100 KB, and this runs on every message of the turn.
+    const one = flat(line.slice(0, TURN_LINE * 2));
+    return bytes(one) > TURN_LINE ? `${Buffer.from(one).subarray(0, TURN_LINE).toString('utf8').replace(/\uFFFD+$/, '')}...` : one;
+  });
   let size = 0, from = lines.length;
   while (from > 0 && size + bytes(lines[from - 1]) + 1 <= TURN_BYTES) size += bytes(lines[--from]) + 1;
   if (from === lines.length) rmSync(join(dir, TURN_FILE), { force: true });
   else atomicWrite(join(dir, TURN_FILE), lines.slice(from).join('\n'));
+  return lines.slice(from);
 }
 /** The running turn a branch published, as lines; none between turns. */
 export function turnLines(dir: string) {
@@ -59,7 +64,7 @@ export async function livePeers(profile: string, self: string) {
   for (const info of listBranches(profile)) {
     if (info.id === self || info.closed) continue;
     const status = await liveStatus(profile, info.id);
-    if (!status) continue;
+    if (!status || status.closing) continue;
     const lines = Array.isArray(status.lines) ? status.lines.filter((line): line is string => typeof line === 'string') : [];
     peers.push({ id: info.id, cwd: typeof status.cwd === 'string' ? status.cwd : info.cwd, started: info.created, lines, ...typeof status.working === 'boolean' ? { working: status.working } : {} });
   }
@@ -73,7 +78,9 @@ export function peersText(peers: Awaited<ReturnType<typeof livePeers>>) {
 async function livePeer(profile: string, id: string, self: string) {
   if (!/^[0-9a-f]{6}$/.test(id)) throw new Error(`No session ${id}: ids are the 6-character ones peers lists.`);
   if (id === self) throw new Error(`${id} is this session.`);
-  if (!await liveStatus(profile, id)) throw new Error(`Session ${id} is not open (anymore). Call peers for the open ones.`);
+  const status = await liveStatus(profile, id);
+  if (!status) throw new Error(`Session ${id} is not open (anymore). Call peers for the open ones.`);
+  if (status.closing) throw new Error(`Session ${id} is closing; a note would not reach it.`);
   return branchDirectory(profile, id);
 }
 
@@ -86,26 +93,36 @@ export async function notePeer(profile: string, self: { id: string; cwd: string 
   appendLine(join(dir, NOTES), { from: self.id, cwd: self.cwd, text: note, date: new Date().toISOString() } satisfies Note);
 }
 
-/** Notes left for this branch since it last took them, oldest first; taking them moves the read mark past them. */
-export function takeNotes(dir: string): Note[] {
-  const file = join(dir, NOTES);
-  if (!existsSync(file)) return [];
+/** Notes left for this branch since the read mark, oldest first, and the mark past them. Nothing moves until `commit`, so
+ * the caller saves them somewhere first: a crash in between shows a note twice rather than never. */
+export function peekNotes(dir: string, warn: (text: string) => void = () => {}): { notes: Note[]; commit: () => void } {
+  const file = join(dir, NOTES), none = { notes: [], commit: () => {} };
+  if (!existsSync(file)) return none;
   let read = 0;
   try { read = Number(readFileSync(join(dir, READ), 'utf8')) || 0; } catch { read = 0; }
   const size = statSync(file).size;
-  if (size <= read) return [];
+  if (size <= read) return none;
   const data = readFileSync(file).subarray(read, size), complete = data.lastIndexOf(0x0a) + 1;
-  if (!complete) return [];
-  const notes = data.subarray(0, complete).toString('utf8').split('\n').flatMap(line => {
-    // SAFETY: from and text are checked; cwd and date are only shown.
-    try { const value: unknown = JSON.parse(line); return record(value) && typeof value.from === 'string' && typeof value.text === 'string' ? [value as unknown as Note] : []; }
-    catch { return []; }
+  if (!complete) return none;
+  const notes = data.subarray(0, complete).toString('utf8').split('\n').filter(Boolean).flatMap(line => {
+    try {
+      const value: unknown = JSON.parse(line);
+      if (record(value) && typeof value.from === 'string' && typeof value.text === 'string')
+        return [{ from: value.from, text: value.text, cwd: typeof value.cwd === 'string' ? value.cwd : '?', date: typeof value.date === 'string' ? value.date : new Date().toISOString() }];
+    } catch { /* reported below */ }
+    warn(`Skipped an unreadable note in ${file}.`);
+    return [];
   });
-  atomicWrite(join(dir, READ), String(read + complete));
+  return { notes, commit: () => atomicWrite(join(dir, READ), String(read + complete)) };
+}
+/** peekNotes, committed at once: for callers whose saving can't fail halfway. */
+export function takeNotes(dir: string, warn?: (text: string) => void) {
+  const { notes, commit } = peekNotes(dir, warn);
+  commit();
   return notes;
 }
 /** The notes as they go after the user's input. */
-export const notesText = (notes: Note[]) => notes.map(n => `[note from ${n.from} (${n.cwd})] ${n.text}`).join('\n');
+export const notesText = (notes: readonly Note[]) => notes.map(n => `[note from ${n.from} (${n.cwd})] ${n.text}`).join('\n');
 
 /** Asks a cheap model a question about a live peer, from that peer's published view only. */
 export async function askPeer(profile: string, self: string, id: string, question: string, registry: ModelRegistry, choice: ModelChoice,
