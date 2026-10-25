@@ -1,6 +1,7 @@
 import { getMarkdownTheme, type ExtensionAPI, type Theme } from '@earendil-works/pi-coding-agent';
 import { Box, Markdown, Text } from '@earendil-works/pi-tui';
-import { REPORT_TYPE, textContent, withoutFullChat } from './transcript.ts';
+import { noteLabel, type Note } from './peers.ts';
+import { NOTE_TYPE, REPORT_TYPE, textContent, withoutFullChat } from './transcript.ts';
 
 const HEAD = /^\[([0-9a-f]{8})\] (?:(Message from subagent \(still running\)): )?/;
 
@@ -35,4 +36,20 @@ export function reportBox(text: string, outputPad: number, theme: Theme, count?:
 }
 export function registerReportRenderer(pi: ExtensionAPI) {
   pi.registerMessageRenderer<ReportDetails | undefined>(REPORT_TYPE, (message, { outputPad }, theme) => reportBox(textContent(message.content), outputPad, theme, message.details?.count));
+}
+
+/** Sent with peer notes: the notes the message holds, for their labels. */
+export interface NoteDetails { notes?: Note[] }
+/** Notes from other sessions, in the same receding box as reports: who sent each one and from where, then its text. */
+export function noteBox(text: string, outputPad: number, theme: Theme, notes?: readonly Note[]) {
+  const box = new Box(outputPad, 1, darkBackground(theme));
+  const items = notes?.length ? notes.map(n => ({ label: noteLabel(n), body: n.text })) : [{ label: 'note from another session', body: text }];
+  items.forEach(({ label, body }, k) => {
+    box.addChild(new Text(theme.fg('dim', `${k ? '\n' : ''}↳ ${label}`), 0, 0));
+    box.addChild(new Text(theme.fg('muted', body.trim()), 0, 0));
+  });
+  return box;
+}
+export function registerNoteRenderer(pi: ExtensionAPI) {
+  pi.registerMessageRenderer<NoteDetails | undefined>(NOTE_TYPE, (message, { outputPad }, theme) => noteBox(textContent(message.content), outputPad, theme, message.details?.notes));
 }

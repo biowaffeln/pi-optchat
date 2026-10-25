@@ -2,7 +2,7 @@
 // extension with a fixture model: what each one sees, and when the others' messages reach it.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createAssistantMessageEventStream, type AssistantMessage, type ToolCall } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionUIContext } from '@earendil-works/pi-coding-agent';
@@ -10,10 +10,11 @@ import optchat from '../src/index.ts';
 import { Memory } from '../src/memory.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
 import { COMPACT } from '../src/prompts.ts';
-import { listBranches } from '../src/branch.ts';
-import { textContent } from '../src/transcript.ts';
+import { branchDirectory, listBranches } from '../src/branch.ts';
+import { NOTE_TYPE, textContent } from '../src/transcript.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
+import { logIn } from './branches-support.ts';
 
 // Short paths: lock sockets have a ~103-byte limit on macOS.
 const root = mkdtempSync('/tmp/oc-sessions-');
@@ -37,6 +38,8 @@ function profile() {
 async function session(name: string, cwd = root) {
   const dir = mkdtempSync(join(root, 's-'));
   const sent: string[] = [], errors: string[] = [], notes: string[] = [];
+  /** The messages of each request the model got, as role and text, the system prompt left out. */
+  const requests: { role: string; text: string }[][] = [];
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
   runtime.registerProvider('fixture', {
     baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
@@ -44,7 +47,10 @@ async function session(name: string, cwd = root) {
     streamSimple(model, context) {
       const compaction = context.messages.some(m => m.role === 'system' && m.content === COMPACT);
       const last = context.messages.at(-1), prompt = textContent(last && 'content' in last ? last.content : '');
-      if (!compaction) sent.push(context.messages.map(m => 'content' in m ? textContent(m.content) : '').join('\n'));
+      if (!compaction) {
+        sent.push(context.messages.map(m => 'content' in m ? textContent(m.content) : '').join('\n'));
+        requests.push(context.messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, text: 'content' in m ? textContent(m.content) : '' })));
+      }
       const asked = prompt.includes('</chat>') ? prompt.slice(prompt.lastIndexOf('</chat>') + 7).trim() : prompt;
       // "call <tool> <json>; <tool> <json>" makes the model call those tools, then answer with their results.
       const calls = !compaction && /^call /.test(asked) && context.messages.at(-1)?.role === 'user'
@@ -80,7 +86,7 @@ async function session(name: string, cwd = root) {
   const view = () => { const last = sent.at(-1) ?? ''; return last.slice(0, last.indexOf('</chat>')); };
   /** The id of this session's branch, from the footer. */
   const id = () => /branch ([0-9a-f]{6})/.exec(notes.join('\n'))?.[1] ?? '';
-  return { ask, close, sent, view, errors, notes, id };
+  return { ask, close, sent, requests, view, errors, notes, id, session };
 }
 /** Every session's close, so a failed test still lets go of its locks and timers. */
 const open: (() => Promise<void>)[] = [];
@@ -169,7 +175,7 @@ test('a session whose view batch-merges after another session merged starts agai
   } finally { await a.close(); await b.close(); }
 });
 
-test('peers lists the other open sessions; a note reaches the end of the peer\'s next input, once, and only one per turn', async () => {
+test('peers lists the other open sessions; a note reaches the peer as its own message after its next input, once, and only one per turn', async () => {
   const name = profile();
   const a = await session(name, '/tmp'), b = await session(name, root);
   try {
@@ -182,10 +188,22 @@ test('peers lists the other open sessions; a note reaches the end of the peer\'s
     assert.match(sent ?? '', /Noted\. .* \| .*already left .* a note this turn/);
     assert.equal(b.sent.length, 1, 'the note started nothing in b');
     await b.ask('next step');
-    assert.match(b.sent.at(-1)!, new RegExp(`next step\\n\\n\\[note from ${a.id()} \\(/tmp\\)\\] I'm changing the auth client too, ping me before you merge$`));
+    const note = `[note from ${a.id()} (/tmp)] I'm changing the auth client too, ping me before you merge`;
+    assert.deepEqual(b.requests.at(-1)!.slice(-2), [{ role: 'user', text: 'next step' }, { role: 'user', text: note }],
+      'the model gets the note as its own message right after the input, which is left as typed');
+    // On screen: the user's message is what they typed, and the note is OptChat's own message, labelled with its sender.
+    const shown = b.session.state.messages.slice(-3);
+    assert.equal(shown[0].role === 'user' && textContent(shown[0].content), 'next step');
+    assert.ok(shown[1].role === 'custom' && shown[1].customType === NOTE_TYPE && shown[1].display, 'a custom note message follows it');
+    assert.deepEqual(shown[1].role === 'custom' && (shown[1].details as { notes: { from: string; cwd: string }[] }).notes.map(n => [n.from, n.cwd]), [[a.id(), '/tmp']]);
     await b.ask('and another');
-    assert.ok(b.sent.at(-1)!.endsWith('\nand another'), 'a note arrives once (the previous exchange still shows it)');
-    assert.match(b.view(), /note from/, 'and stays in b\'s memory with the input it came with');
+    assert.equal(b.requests.at(-1)!.at(-1)!.text, 'and another', 'a note arrives once (the previous exchange still shows it)');
+    assert.equal(b.requests.at(-1)!.filter(m => m.text === note).length, 1, 'once, in the previous exchange');
+    assert.match(b.view(), /note from/, 'and stays in b\'s memory');
+    const own = logIn(branchDirectory(profilePath(name), b.id()));
+    assert.deepEqual(own.filter(e => e.text === note).map(e => e.kind), ['note'], 'logged once, as a note, not as the user\'s words');
+    assert.ok(own.some(e => e.kind === 'user' && e.text === 'next step'), 'and the input as typed');
+    assert.ok(existsSync(join(branchDirectory(profilePath(name), b.id()), 'notes.read')), 'the read mark moved once it was logged');
     assert.match(await a.ask(`call note_peer {"id":"${a.id()}","text":"hi"}`) ?? '', /is this session/);
     assert.match(await a.ask('call note_peer {"id":"abcdef","text":"hi"}') ?? '', /not open/);
     assert.match(await a.ask(`call note_peer {"id":"${b.id()}","text":"${'x'.repeat(281)}"}`) ?? '', /281 bytes; notes are at most 280/);
@@ -202,10 +220,11 @@ test('a note waits for a plain input: not on a command, whose arguments it would
     await b.ask('/optchat-nothing-like-this');
     assert.doesNotMatch(b.sent.at(-1) ?? '', /wait for me/, 'not on an input that starts with a slash');
     await b.ask('plain now');
-    assert.match(b.sent.at(-1)!, /plain now\n\n\[note from [0-9a-f]{6} \(\/tmp\)\] wait for me$/);
+    assert.deepEqual(b.requests.at(-1)!.slice(-2).map(m => m.text), ['plain now', `[note from ${a.id()} (/tmp)] wait for me`]);
     await a.ask(`call note_peer {"id":"${b.id()}","text":"left for later"}`);
     await b.close();
     assert.ok(trunkTexts(name).some(t => t === `[note from ${a.id()} (/tmp)] left for later`), 'the unread note went into b\'s memory as it closed');
+    assert.equal(trunkTexts(name).filter(t => t === `[note from ${a.id()} (/tmp)] wait for me`).length, 1, 'and the delivered one is there once');
     assert.match(await a.ask(`call note_peer {"id":"${b.id()}","text":"too late"}`) ?? '', /not open/);
   } finally { await a.close(); await b.close(); }
 });

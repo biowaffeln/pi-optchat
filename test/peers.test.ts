@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { Memory } from '../src/memory.ts';
 import { openBranchMemory, recoverBranches, startBranch } from '../src/branch.ts';
-import { lastLines, livePeers, notePeer, notesText, peersText, publishTurn, publishView, takeNotes, turnLines } from '../src/peers.ts';
+import { lastLines, livePeers, logNotes, noteLabel, notePeer, noteReceipt, notesText, peekNotes, peersText, publishTurn, publishView, takeNotes, turnLines } from '../src/peers.ts';
 
 const silent = () => {};
 const compress = async () => 'a line';
@@ -81,7 +81,36 @@ test('a note no input carried goes into the receiving session\'s memory when it 
     await b.memory.close(); await b.release();
     assert.deepEqual(await recoverBranches(profile, silent), [b.info.id]);
     const trunk = new Memory(profile, compress, silent);
-    try { assert.ok(trunk.root.some(e => e.kind === 'user' && e.text === `[note from ${a.info.id} (/work/a)] heads up: the schema changed`)); }
+    try { assert.deepEqual(trunk.root.filter(e => e.text === `[note from ${a.info.id} (/work/a)] heads up: the schema changed`).map(e => e.kind), ['note']); }
     finally { await trunk.close(); }
   } finally { await a.memory.close(); await a.release(); }
+});
+
+test('a note logged before its read mark moved (a crash in between) is logged once by the recovery, as a note', async () => {
+  const { profile, a, b } = await setup();
+  try {
+    await notePeer(profile, { id: a.info.id, cwd: '/work/a' }, b.info.id, 'first');
+    await notePeer(profile, { id: a.info.id, cwd: '/work/a' }, b.info.id, 'second');
+    const { notes } = peekNotes(b.dir);
+    // b showed and logged the first one, then died before moving the read mark; the second it never got to.
+    logNotes(b.memory, notes.slice(0, 1));
+    logNotes(b.memory, notes.slice(0, 1));
+    assert.equal(b.memory.root.filter(e => e.receipt === noteReceipt(notes[0])).length, 1, 'logNotes skips one memory has');
+    await b.memory.close(); await b.release();
+    assert.deepEqual(await recoverBranches(profile, silent), [b.info.id]);
+    const trunk = new Memory(profile, compress, silent);
+    try {
+      const logged = trunk.root.filter(e => e.text.startsWith('[note from '));
+      assert.deepEqual(logged.map(e => [e.kind, e.text]), [['note', `[note from ${a.info.id} (/work/a)] first`], ['note', `[note from ${a.info.id} (/work/a)] second`]]);
+    } finally { await trunk.close(); }
+  } finally { await a.memory.close(); await a.release(); }
+});
+
+test('a note is labelled with its sender\'s id and folder, the home folder as ~', () => {
+  assert.equal(noteLabel({ from: '55d82d', cwd: '/Users/mark/src/pi-optchat' }, '/Users/mark'), 'note from 55d82d · ~/src/pi-optchat');
+  assert.equal(noteLabel({ from: '55d82d', cwd: '/Users/mark' }, '/Users/mark'), 'note from 55d82d · ~');
+  assert.equal(noteLabel({ from: '55d82d', cwd: '/Users/markus' }, '/Users/mark'), 'note from 55d82d · /Users/markus');
+  const note = { from: '55d82d', cwd: '/w', text: 'hi', date: '2026-10-25T09:00:00.000Z' };
+  assert.equal(noteReceipt(note), noteReceipt({ ...note }));
+  assert.notEqual(noteReceipt(note), noteReceipt({ ...note, text: 'hi!' }));
 });

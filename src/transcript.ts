@@ -14,6 +14,9 @@ export const REPORT_TYPE = 'optchat-report';
 export const REPORT_RECEIPT = 'report:';
 /** A report's receipt in memory: it marks the entry as `work` and keeps a restart from delivering the report twice. */
 export const reportReceipt = (text: string) => REPORT_RECEIPT + createHash('sha256').update(text).digest('hex');
+/** Notes from other sessions on the profile (src/peers.ts): a custom message shown after the input they came with, a user
+ * message to the model that starts "[note from <id> (<cwd>)]", and `note` in memory, never the user's words. */
+export const NOTE_TYPE = 'optchat-note';
 
 export function textContent(content: unknown, images = true): string {
   if (typeof content === 'string') return content;
@@ -35,11 +38,12 @@ export function typedText(content: unknown) {
  * becomes a user message here too; another extension's starts with "[customType] ", as the recipe marks background work, so
  * the compactor never takes it for the user's words. A hidden one (display false), such as context an extension injects
  * each turn, stays custom: the model still sees it, and memory and the replay leave it out. Reports reach the model and the
- * previous-exchange replay as user messages; memory logs them as `work`. */
+ * previous-exchange replay as user messages; memory logs them as `work`. Peer notes carry their own "[note from …]" tag, and
+ * memory logs them as `note`. */
 export function asUser(message: AgentMessage): AgentMessage {
   if (message.role !== 'custom' || !message.display) return message;
   const { content, customType, timestamp } = message;
-  if (customType === REPORT_TYPE) return { role: 'user', content, timestamp };
+  if (customType === REPORT_TYPE || customType === NOTE_TYPE) return { role: 'user', content, timestamp };
   const tag = `[${customType}] `;
   if (typeof content === 'string') return { role: 'user', content: tag + content, timestamp };
   const [first, ...rest] = content;

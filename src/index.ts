@@ -12,10 +12,10 @@ import { createProfile, instructions, isWindows, lastProfile, listProfiles, load
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, MASTER, modelsHint, PEERS_DOC, SEARCH_DOC, TURN_REFRESHED, VIEW_DOC } from './prompts.ts';
 import { cachePayload, record } from './cache.ts';
 import { saveImages } from './images.ts';
-import { asUser, boundedMessage, atWork, buildContext, logMessage, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, textContent, typedText } from './transcript.ts';
-import { registerReportRenderer, type ReportDetails } from './report-message.ts';
+import { asUser, boundedMessage, atWork, buildContext, logMessage, NOTE_TYPE, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, textContent, typedText } from './transcript.ts';
+import { registerNoteRenderer, registerReportRenderer, type NoteDetails, type ReportDetails } from './report-message.ts';
 import { memoryTools, result, searchTool } from './tools.ts';
-import { askPeer, livePeers, notePeer, notesText, peekNotes, peersText, publishTurn, publishView, turnLines } from './peers.ts';
+import { askPeer, livePeers, logNotes, notePeer, noteReceipt, notesText, peekNotes, peersText, publishTurn, publishView, turnLines, type Note } from './peers.ts';
 import { Children, loadedBuiltins, modelsTool, refreshContextFiles, TASKS } from './agents.ts';
 import { isActiveRun, type RunInfo } from './runs.ts';
 import { exportBrowser } from './browser.ts';
@@ -70,6 +70,10 @@ export default function optchat(pi: ExtensionAPI) {
   let runStarted = false;
   /** The peers this run left a note: one each per turn, so a note can't turn into a chat. */
   let noted = new Set<string>();
+  /** Notes from other sessions this run shows after its input (before_agent_start), until their message arrives. Each note
+   * message in the run keeps its notes and the read mark past them, which moves only once memory has logged them. */
+  let offered: { notes: Note[]; commit: () => void } | undefined;
+  const noteMessages = new Map<AgentMessage, { notes: Note[]; commit: () => void }>();
   let fault: string | undefined;
   /** Reports not yet in memory. `count`: how many subagent reports the text joins. `batch`: held while the rest of that spawn runs, not sent yet.
    * `steered`: last sent into a running turn, where Esc or a dequeue can clear it from Pi's queue unseen. */
@@ -146,7 +150,8 @@ export default function optchat(pi: ExtensionAPI) {
     if (!active) return;
     while (logged < run.length) {
       const message = run[logged];
-      const receipt = receipts.get(message);
+      const receipt = receipts.get(message), notes = noteMessages.get(message);
+      if (notes) { logNotes(active.memory, notes.notes); notes.commit(); noteMessages.delete(message); logged++; continue; }
       logMessage(active.memory, message, receipt); logged++;
       if (receipt && !receipt.startsWith(REPORT_RECEIPT)) active.inbox.acknowledge(receipt);
       receipts.delete(message);
@@ -212,9 +217,9 @@ export default function optchat(pi: ExtensionAPI) {
         const logged = new Set(old.memory.root.map(e => e.receipt));
         for (const r of reports) if (!logged.has(reportReceipt(r.text))) old.memory.append('work', r.text, undefined, reportReceipt(r.text));
         reports = []; saveReports();
-        // So do notes from other sessions that no input of this one carried.
+        // So do notes from other sessions this one never logged.
         const { notes, commit } = peekNotes(old.branch.dir);
-        for (const note of notes) old.memory.append('user', notesText([note]), note.date);
+        logNotes(old.memory, notes);
         commit();
       }
       // No checkpoint here: a host may kill Pi a second after asking it to stop (#220). The next turn's checkpoint commits what this wrote.
@@ -224,7 +229,7 @@ export default function optchat(pi: ExtensionAPI) {
       if (!pendingImport(old.dir)) await closeBranch(old);
     } finally {
       await old.memory.close(); await old.branch.release(); active = undefined;
-      run = []; previous = []; logged = 0; keep = 0; view = undefined; runStarted = false; receipts.clear(); prompt = ''; idle = () => true;
+      run = []; previous = []; logged = 0; keep = 0; view = undefined; runStarted = false; receipts.clear(); noteMessages.clear(); offered = undefined; prompt = ''; idle = () => true;
       untitle?.(); untitle = undefined; title.clear(); working = false;
     }
   };
@@ -409,17 +414,8 @@ export default function optchat(pi: ExtensionAPI) {
     }
     if (importing || pendingImport(active.dir)) { ctx.ui.notify('This profile has an import in progress. Use /optchat import to resume or discard it, or switch profiles.', 'info'); return { action: 'handled' }; }
     if (event.source !== 'extension') {
-      // Notes other sessions left go at the end of the next thing the user sends, so they never start a turn of their own. Not
-      // on a queued input, which Esc can take back, nor on a command: Pi expands skills and templates after this, and a note
-      // would become part of their arguments.
-      let text = event.text;
-      try {
-        const { notes, commit } = event.streamingBehavior === undefined && !text.trimStart().startsWith('/') ? peekNotes(active.branch.dir) : { notes: [], commit: () => {} };
-        if (notes.length) text = `${text}\n\n${notesText(notes)}`;
-        active.inbox.record(text, event.streamingBehavior !== undefined);
-        commit();
-      } catch (error) { ctx.ui.notify(`Could not save input: ${errorText(error)}`, 'error'); return { action: 'handled' }; }
-      if (text !== event.text) return { action: 'transform', text, images: event.images };
+      try { active.inbox.record(event.text, event.streamingBehavior !== undefined); }
+      catch (error) { ctx.ui.notify(`Could not save input: ${errorText(error)}`, 'error'); return { action: 'handled' }; }
     }
     return { action: 'continue' };
   });
@@ -434,7 +430,7 @@ export default function optchat(pi: ExtensionAPI) {
     catch { /* a status is a courtesy */ }
   };
   const startRun = (ctx: ExtensionContext) => {
-    flush(); run = []; logged = 0; keep = 0; view = undefined; runStarted = true; noted = new Set();
+    flush(); run = []; logged = 0; keep = 0; view = undefined; runStarted = true; noted = new Set(); offered = undefined;
     const config = active?.config;
     previous = config?.previousExchange ? previousExchange(ctx.sessionManager.getBranch(), config.previousExchangeKB * 1000) : [];
     pi.appendEntry(RUN_BOUNDARY, { state: 'start' });
@@ -454,7 +450,24 @@ export default function optchat(pi: ExtensionAPI) {
     event.systemPromptOptions.sections.instructions = `${instructions(a.dir)}\n\n${IMPORT_GUIDANCE}`;
     refreshContextFiles(event.systemPromptOptions);
     prompt = event.systemPrompt;
+    return deliverNotes(a, event as { messageType?: string; prompt?: string }, ctx);
   });
+  /** Notes other sessions left come with the next prompt the user sends, as a message of their own right after it: shown in
+   * their own box, never as part of what the user typed, and they never start a turn. Pi adds the message after the prompt,
+   * so the cached prefix is the same as without it. Not on a run a report started (that is no input of the user's) nor on
+   * a prompt that is still a `/` command; a message queued while a run works never gets here, so Esc can't take a note back
+   * with it. The read mark moves once memory has the notes (flush), so a crash before that shows them again rather than never. */
+  const deliverNotes = (a: Active, trigger: { messageType?: string; prompt?: string }, ctx: ExtensionContext) => {
+    if (trigger.messageType !== undefined && trigger.messageType !== 'user') return;
+    if ((trigger.prompt ?? '').trimStart().startsWith('/')) return;
+    try {
+      const { notes, commit } = peekNotes(a.branch.dir, warning => ctx.ui.notify(warning, 'warning'));
+      const known = new Set(a.memory.root.map(e => e.receipt)), fresh = notes.filter(n => !known.has(noteReceipt(n)));
+      if (!fresh.length) { if (notes.length) commit(); return; }
+      offered = { notes: fresh, commit };
+      return { message: { customType: NOTE_TYPE, content: notesText(fresh), display: true, details: { notes: fresh } satisfies NoteDetails } };
+    } catch (error) { ctx.ui.notify(`OptChat could not read notes from other sessions: ${errorText(error)}`, 'warning'); }
+  };
   const DUPLICATE_REPORT = '(duplicate report, already delivered)';
   pi.on('message_end', async (event, ctx) => {
     if (!active || !runStarted) return;
@@ -466,7 +479,12 @@ export default function optchat(pi: ExtensionAPI) {
       catch (error) { ctx.ui.notify(`OptChat could not keep an image: ${errorText(error)}`, 'warning'); }
     }
     if (!active) return;
-    if (message.role === 'user') {
+    if (bounded.role === 'custom' && bounded.customType === NOTE_TYPE) {
+      // Logged as notes, not as the user's words; the details are the notes as they were offered, should `offered` be gone.
+      const details = bounded.details as NoteDetails | undefined;
+      noteMessages.set(message, offered ?? { notes: details?.notes ?? [], commit: () => {} });
+      offered = undefined;
+    } else if (message.role === 'user') {
       try {
         const text = textContent(message.content);
         // A report is shown as our custom message, or sent as plain text before the first run has a prompt to reuse.
@@ -572,7 +590,7 @@ export default function optchat(pi: ExtensionAPI) {
       await checkpoints;
     }
   });
-  registerReportRenderer(pi);
+  registerReportRenderer(pi); registerNoteRenderer(pi);
   const [zoom, date] = memoryTools(() => required().memory, id => required().children.transcript(id) ?? otherTranscript(required().dir, id));
   pi.registerTool(zoom); pi.registerTool(date);
   pi.registerTool({ ...searchTool(() => required().memory), defaultActive: false });
@@ -604,7 +622,7 @@ export default function optchat(pi: ExtensionAPI) {
       return result(answer);
     },
   });
-  pi.registerTool({ name: 'note_peer', label: 'Note to another session', description: 'Leave a short note (at most 280 bytes) for another open session (an id from peers). It is added to the end of that session\'s next input; it never starts a turn there and gets no reply. One note per session per turn.',
+  pi.registerTool({ name: 'note_peer', label: 'Note to another session', description: 'Leave a short note (at most 280 bytes) for another open session (an id from peers). That session sees it right after its next input from the user, marked as a note from this session; it never starts a turn there and gets no reply. One note per session per turn.',
     parameters: Type.Object({ id: Type.String(), text: Type.String() }),
     async execute(_id, args, _signal, _update, ctx) {
       const a = required();
@@ -613,7 +631,7 @@ export default function optchat(pi: ExtensionAPI) {
       const turn = noted; turn.add(args.id);
       try { await notePeer(a.dir, { id: a.branch.info.id, cwd: ctx.cwd }, args.id, args.text); }
       catch (error) { turn.delete(args.id); throw error; }
-      return result(`Noted. ${args.id} sees it at the end of its next input.`);
+      return result(`Noted. ${args.id} sees it with its next input.`);
     },
   });
   pi.registerTool({ name: 'tell', label: 'Tell background agent', description: 'Send a message to a subagent. A running one gets it at its next tool boundary. A finished one you started is resumed with its earlier conversation, and its new report arrives automatically.',

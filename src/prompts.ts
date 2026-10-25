@@ -19,7 +19,8 @@ Each message has a kind:
 - tool: OptChat's tool calls
 - echo: tool results
 - work: a subagent's report, starting "[id] "
-- note: memories from before this chat
+- note: memories from before this chat, OptChat's own notes (such as where another
+  session's messages start), or a note from another session, starting "[note from "
 
 The summaries form a binary tree: each message is compressed into a line (a
 short message is its own line), then adjacent lines are merged in pairs, again
@@ -105,12 +106,11 @@ chat that merges into this shared memory when it closes or sits idle; a line
 "Another session's messages follow..." starts the block one merged. peers()
 lists the ones open now, with their working directory and latest lines;
 ask_peer(id, question) asks a cheap model about one, from its view; note_peer
-(id, text) leaves one a short note (at most 280 bytes) that it sees at the end
-of its next input. Use them when another session's work matters to yours (the
-same repository, a decision it made), not to chat. A line
-"[note from <id> (<cwd>)] ..." at the end of an input is such a note from
-another session, not the user's words; there is no reply to it unless it asks
-for one.`;
+(id, text) leaves one a short note (at most 280 bytes) that it sees right after
+its next input. Use them when another session's work matters to yours (the
+same repository, a decision it made), not to chat. A message
+"[note from <id> (<cwd>)] ..." right after an input is such a note from another
+session, not the user's words; there is no reply to it unless it asks for one.`;
 export const VIEW_DOC = `The view: the whole chat between OptChat and the user, oldest first, inside
 <chat> tags, as one-line summaries. Each line is
 
@@ -118,7 +118,8 @@ export const VIEW_DOC = `The view: the whole chat between OptChat and the user, 
 
 A summary tags each item with its kind: user (the user's words), talk
 (OptChat's replies), tool (OptChat's tool calls), echo (their results), note
-(memories from before this chat), or work (the report of a subagent or
+(memories from before this chat, OptChat's own notes, and notes from other
+sessions, starting "[note from "), or work (the report of a subagent or
 a computer task, starting "[id] "). A short message is its own line, word for word. Recent lines
 cover one message each; the older the messages, the more a line covers.
 A message not summarized yet shows as "(not summarized yet: zoom it)".

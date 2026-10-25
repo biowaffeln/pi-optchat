@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
@@ -6,7 +8,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { appendLine, branchDirectory, listBranches, liveStatus } from './branch.ts';
 import { cachePayload, record } from './cache.ts';
 import { reasoningFor, retryTransient, type ModelChoice } from './compactor.ts';
-import { bytes, flat } from './memory.ts';
+import { bytes, flat, type Memory } from './memory.ts';
 import { ASK_PEER } from './prompts.ts';
 import { atomicWrite } from './store.ts';
 import { textContent } from './transcript.ts';
@@ -14,8 +16,8 @@ import { textContent } from './transcript.ts';
 // Peers are the other live branches of the same profile (other Pi sessions). A branch publishes what it is doing in two places:
 // its live lock answers with a small status (cwd, the last few lines of its view), and `view.txt` in its folder holds its whole
 // rendered view, rewritten after each turn. A peer can read both but writes only one thing into another branch: a note, appended
-// to that branch's `notes.jsonl`, which it adds to the end of its next input. Nothing here starts a turn or touches a peer's
-// memory, log or cache.
+// to that branch's `notes.jsonl`, which that branch shows as a message of its own right after its next input (src/index.ts).
+// Nothing here starts a turn or touches a peer's memory, log or cache.
 
 /** The most bytes of one note: OptMem's note size. */
 export const NOTE_BYTES = 280;
@@ -121,8 +123,21 @@ export function takeNotes(dir: string, warn?: (text: string) => void) {
   commit();
   return notes;
 }
-/** The notes as they go after the user's input. */
+/** The notes as the model reads them, one line each. */
 export const notesText = (notes: readonly Note[]) => notes.map(n => `[note from ${n.from} (${n.cwd})] ${n.text}`).join('\n');
+/** One note's receipt in memory: the same however it got there (with an input, at close, in a crash recovery), so it is
+ * logged once. */
+export const noteReceipt = (note: Note) => `note:${createHash('sha256').update(JSON.stringify([note.from, note.date, note.text])).digest('hex').slice(0, 32)}`;
+/** Logs each note as its own `note` entry, skipping the ones memory already has. */
+export function logNotes(memory: Memory, notes: readonly Note[]) {
+  const known = new Set(memory.root.map(e => e.receipt));
+  for (const note of notes) if (!known.has(noteReceipt(note))) memory.append('note', notesText([note]), note.date, noteReceipt(note));
+}
+/** A note's sender as the TUI shows it: its id and working directory, the home folder as ~. */
+export function noteLabel(note: Pick<Note, 'from' | 'cwd'>, home = homedir()) {
+  const cwd = home && (note.cwd === home || note.cwd.startsWith(`${home}/`)) ? `~${note.cwd.slice(home.length)}` : note.cwd;
+  return `note from ${note.from} · ${cwd}`;
+}
 
 /** Asks a cheap model a question about a live peer, from that peer's published view only. */
 export async function askPeer(profile: string, self: string, id: string, question: string, registry: ModelRegistry, choice: ModelChoice,

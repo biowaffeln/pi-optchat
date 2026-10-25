@@ -8,8 +8,8 @@ import { createAgentSession, CustomMessageComponent, DefaultResourceLoader, init
   UserMessageComponent, type ExtensionAPI, type MessageRenderer } from '@earendil-works/pi-coding-agent';
 import optchat from '../src/index.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
-import { registerReportRenderer, reportParts } from '../src/report-message.ts';
-import { REPORT_TYPE, textContent, withoutFullChat } from '../src/transcript.ts';
+import { registerNoteRenderer, registerReportRenderer, reportParts } from '../src/report-message.ts';
+import { asUser, NOTE_TYPE, REPORT_TYPE, textContent, withoutFullChat } from '../src/transcript.ts';
 import { COMPACT } from '../src/prompts.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
@@ -41,6 +41,23 @@ test('subagent messages render as a dark labelled box, never in the user-message
   const reportBg = backgrounds(lines);
   assert.ok(reportBg.size > 0, 'the report has its own background');
   for (const bg of userBg) assert.ok(!reportBg.has(bg), 'the report must not use the user-message background');
+});
+
+test('a peer note renders as a dark box labelled with its sender, never as the user\'s words, and reaches the model tagged', () => {
+  let renderer: MessageRenderer | undefined;
+  registerNoteRenderer({ registerMessageRenderer: (type: string, r: MessageRenderer) => { assert.equal(type, NOTE_TYPE); renderer = r; } } as unknown as ExtensionAPI);
+  const notes = [{ from: '55d82d', cwd: '/srv/api', text: 'auth moved to /session', date: '2026-10-25T09:00:00.000Z' }, { from: '9ebcb1', cwd: '/srv/web', text: 'login page done', date: '2026-10-25T09:01:00.000Z' }];
+  const content = '[note from 55d82d (/srv/api)] auth moved to /session\n[note from 9ebcb1 (/srv/web)] login page done';
+  const message = { role: 'custom' as const, customType: NOTE_TYPE, content, display: true, details: { notes }, timestamp: 1 };
+  const lines = new CustomMessageComponent(message, renderer).render(80), text = plain(lines);
+  assert.match(text, /↳ note from 55d82d · \/srv\/api[\s\S]*auth moved to \/session[\s\S]*↳ note from 9ebcb1 · \/srv\/web[\s\S]*login page done/);
+  assert.doesNotMatch(text, /\[note from|\[optchat-note\]/);
+  const userBg = backgrounds(new UserMessageComponent('typed by you').render(80)), noteBg = backgrounds(lines);
+  assert.ok(noteBg.size > 0, 'the note has its own background');
+  for (const bg of userBg) assert.ok(!noteBg.has(bg), 'the note must not use the user-message background');
+  // Without details (another writer), the text itself is shown.
+  assert.match(plain(new CustomMessageComponent({ ...message, details: undefined }, renderer).render(80)), /note from another session[\s\S]*\[note from 55d82d/);
+  assert.deepEqual(asUser(message), { role: 'user', content, timestamp: 1 }, 'the model reads it with its own tag, not "[optchat-note]"');
 });
 
 test('a report reaches an idle or busy main agent as a user message to the model, as work in memory, with the same system prompt', async () => {
