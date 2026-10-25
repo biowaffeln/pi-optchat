@@ -58,7 +58,7 @@ test('a merge with nothing in between keeps every node: the trunk is the branch\
     for (let k = 0; k < 13; k++) a.memory.append(k % 2 ? 'talk' : 'user', long(`branch ${k}`), new Date(2026, 0, 2, 0, k).toISOString());
     await a.memory.settle(AbortSignal.timeout(10_000), 'tree');
     const result = await mergeBranch(profile, a.dir, a.info, a.memory.root, a.memory.tree.values(), 'close', silent);
-    assert.deepEqual(result, { added: 13, at: 10, length: 23, moved: false });
+    assert.deepEqual(result, { added: 13, at: 10, length: 23, moved: false, copied: result.copied });
     const log = trunkLog(profile);
     assert.deepEqual(log.slice(10).map(e => [e.i, e.text, e.date, e.branch?.i]), a.memory.root.slice(10).map(e => [e.i, e.text, e.date, e.i]), 'same ids, texts and dates');
     const trunk = new Memory(profile, () => Promise.reject(new Error('should not summarize')), silent, undefined, 0);
@@ -83,7 +83,7 @@ test('two branches at once: the second merge goes after the first as one block, 
     await mergeBranch(profile, a.dir, a.info, a.memory.root, a.memory.tree.values(), 'close', silent);
     const result = await mergeBranch(profile, b.dir, b.info, b.memory.root, b.memory.tree.values(), 'close', silent);
     // b's messages 9..16 go after a's (9..13) and a note saying where they came from (14): 15..22, a shift of 6.
-    assert.deepEqual(result, { added: 8, at: 14, length: 23, moved: true });
+    assert.deepEqual(result, { added: 8, at: 14, length: 23, moved: true, copied: result.copied });
     const log = trunkLog(profile);
     assert.equal(log.length, 23);
     assert.match(log[14].text, /^Another session's messages follow: branch [0-9a-f]+, in \/work\/b/);
@@ -112,7 +112,7 @@ test('a branch can merge while idle and again later; each merge adds only what i
     await mergeBranch(profile, a.dir, a.info, a.memory.root, a.memory.tree.values(), 'idle', silent);
     a.memory.append('user', long('second')); a.memory.append('talk', long('third'));
     const result = await mergeBranch(profile, a.dir, a.info, a.memory.root, a.memory.tree.values(), 'close', silent);
-    assert.deepEqual(result, { added: 2, at: 5, length: 7, moved: false });
+    assert.deepEqual(result, { added: 2, at: 5, length: 7, moved: false, copied: result.copied });
     assert.deepEqual(trunkLog(profile).map(e => e.branch?.i ?? null), [null, null, null, null, 4, 5, 6]);
   } finally { await a.memory.close(); await a.release(); }
 });
@@ -154,7 +154,7 @@ test('a rebase merges everything and starts again from the trunk\'s end, keeping
     assert.ok(a.memory.root.some(e => e.text.startsWith('b says hi')), 'a now sees b');
     a.memory.append('user', long('a goes on'));
     const result = await mergeBranch(profile, a.dir, a.info, a.memory.root, a.memory.tree.values(), 'close', silent);
-    assert.deepEqual(result, { added: 1, at: 9, length: 10, moved: false });
+    assert.deepEqual(result, { added: 1, at: 9, length: 10, moved: false, copied: result.copied });
     assert.deepEqual(trunkLog(profile).filter(e => e.branch?.id === a.info.id).map(e => [e.i, e.branch!.i]), [[8, 6], [9, 9]]);
     assert.ok(existsSync(join(a.dir, 'rebased', '6', 'main')), 'the old log is kept aside');
   } finally { await a.memory.close(); await b.memory.close(); await a.release(); await b.release(); }

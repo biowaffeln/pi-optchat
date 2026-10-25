@@ -1,15 +1,14 @@
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { hostname } from 'node:os';
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { parseArgs, parseSkillBlock, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import { Memory } from './memory.ts';
-import { atomicWrite, storeFor } from './store.ts';
+import { Memory, type Compressor } from './memory.ts';
+import { atomicWrite } from './store.ts';
 import { createCompressor, type ModelChoice } from './compactor.ts';
-import { createProfile, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, profilePath, rememberProfile, saveConfig, type ProfileConfig } from './profiles.ts';
+import { createProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, profilePath, rememberProfile, saveConfig, type ProfileConfig } from './profiles.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, MASTER, modelsHint, SEARCH_DOC, TURN_REFRESHED, VIEW_DOC } from './prompts.ts';
 import { cachePayload, record } from './cache.ts';
 import { saveImages } from './images.ts';
@@ -21,6 +20,8 @@ import { isActiveRun, type RunInfo } from './runs.ts';
 import { exportBrowser } from './browser.ts';
 import { Inbox } from './inbox.ts';
 import { checkpoint } from './checkpoint.ts';
+import { closeInfo, listBranches, liveStatus, mergeBranch, openBranchMemory, otherTranscript, recoverBranches, resetBranch, saveInfo, startBranch, trunkState, type BranchInfo, type MergeReason } from './branch.ts';
+import { LockBusy, lockPath, takeLock } from './locks.ts';
 import { memoryDirectory, pendingImport, prepareImport, runImport, discardImport } from './import/job.ts';
 import { chooseImport, showProgress } from './import/ui.ts';
 import { UsageLedger } from './usage.ts';
@@ -36,7 +37,15 @@ const toggle = (prompt: string, line: string, on: boolean, after: string) => on 
 /** A report run while idle reuses the last built prompt, so Previous exchange and Memory search changes since then are applied here. */
 const promptFor = (prompt: string, { previousExchange, memorySearch }: ProfileConfig) =>
   allowSearch(toggle(toggle(prompt, CONTINUITY, previousExchange, VIEW_DOC), SEARCH_DOC, memorySearch, previousExchange ? VIEW_DOC + CONTINUITY : VIEW_DOC), memorySearch);
-interface Active { name: string; dir: string; config: ProfileConfig; memory: Memory; inbox: Inbox; children: Children; usage: UsageLedger; unlock: () => Promise<void> }
+/** This session's branch of the profile (src/branch.ts): its folder, its info, and the release of its live lock. `merged`: how much
+ * of the branch's log the trunk has. `seen`: the view's batch merges already looked at for a rebase. `changed`: when the log last grew. */
+interface Branch { dir: string; info: BranchInfo; release: () => Promise<void>; setStatus: (status: Record<string, unknown>) => void;
+  merged: number; seen: number; length: number; changed: number }
+interface Active { name: string; dir: string; config: ProfileConfig; memory: Memory; inbox: Inbox; children: Children; usage: UsageLedger;
+  branch: Branch; compress: Compressor }
+/** How often an open session checks whether it has been idle long enough to merge. OPTCHAT_IDLE_MS (milliseconds) overrides
+ * the Merge when idle setting, for tests. */
+const idleMs = (config: ProfileConfig) => process.env.OPTCHAT_IDLE_MS ? Number(process.env.OPTCHAT_IDLE_MS) : config.idleMergeMinutes * 60_000;
 
 /** OptChat's own version, read from the package.json beside src/ (in the checkout and the npm package alike); none if unreadable. */
 export const version = ((): string | undefined => {
@@ -126,10 +135,10 @@ export default function optchat(pi: ExtensionAPI) {
     let note = '';
     try { note = importing ? ' · importing' : pendingImport(a.dir) ? ' · import paused: /optchat import' : ''; }
     catch { note = ' · import journal invalid'; }
-    ctx.ui.setStatus('optchat', `OptChat: ${a.name} · ${a.memory.root.length} messages · ${a.memory.pending} pending · ${a.children.ids.length} agents${note}`);
+    ctx.ui.setStatus('optchat', `OptChat: ${a.name} · branch ${a.branch.info.id} · ${a.memory.root.length} messages · ${a.memory.pending} pending · ${a.children.ids.length} agents${note}`);
   };
   // `steered` describes this process's Pi queue, so it is not journaled.
-  const saveReports = () => { if (active) atomicWrite(join(active.dir, 'pending-reports.json'), JSON.stringify(reports, (key, value: unknown) => key === 'steered' ? undefined : value)); };
+  const saveReports = () => { if (active) atomicWrite(join(active.branch.dir, 'pending-reports.json'), JSON.stringify(reports, (key, value: unknown) => key === 'steered' ? undefined : value)); };
   const flush = () => {
     if (!active) return;
     while (logged < run.length) {
@@ -162,18 +171,50 @@ export default function optchat(pi: ExtensionAPI) {
     reports = [...reports.filter(r => r.batch !== batch), ...texts.length ? [{ text: texts.join('\n\n'), count: texts.length, batch }] : []];
     saveReports();
   };
+  /** Merges what the trunk doesn't have yet of this branch. One merge at a time; a failure only warns, and the next merge (or,
+   * after a crash, the next Pi to open the profile) picks up the same messages. */
+  let merging: Promise<unknown> = Promise.resolve();
+  const merge = (a: Active, reason: MergeReason, warn: (text: string) => void) => {
+    const next = merging.catch(() => {}).then(async () => {
+      const { branch, memory } = a, length = memory.root.length;
+      const result = await mergeBranch(a.dir, branch.dir, branch.info, memory.root, memory.tree.values(), reason, warn);
+      branch.merged = Math.max(branch.merged, length);
+      return result;
+    });
+    merging = next;
+    return next;
+  };
+  /** Merges everything this branch said and marks it closed. */
+  const closeBranch = async (a: Active) => {
+    if (a.branch.info.closed) return;
+    a.branch.info.closing = true; saveInfo(a.branch.dir, a.branch.info);
+    await merge(a, 'close', () => {});
+    closeInfo(a.branch.dir, a.branch.info);
+  };
   const stop = async () => {
     inspectorController?.abort(); unmountNavigation?.(); unmountNavigation = undefined;
     stopping = true; importController?.abort(); await importTask?.catch(() => {});
+    clearInterval(idleTimer); idleTimer = undefined;
     if (!active) return;
     const old = active;
     try {
       await recovery;
-      await old.children.close(); flush(); if (!pendingImport(old.dir)) old.inbox.recover(old.memory);
+      await old.children.close(); flush();
+      if (!pendingImport(old.dir)) {
+        old.inbox.recover(old.memory);
+        // Reports this session never got to deliver go into its memory as they are, so the trunk has them: the next session
+        // is another branch, with its own journal, and would never deliver them.
+        const logged = new Set(old.memory.root.map(e => e.receipt));
+        for (const r of reports) if (!logged.has(reportReceipt(r.text))) old.memory.append('work', r.text, undefined, reportReceipt(r.text));
+        reports = []; saveReports();
+      }
       // No checkpoint here: a host may kill Pi a second after asking it to stop (#220). The next turn's checkpoint commits what this wrote.
       await old.memory.close(); await checkpoints;
+      // The merge is a few file appends under the trunk lock. If Pi is killed before it ends, `closing` makes the next Pi on
+      // this profile finish it as a close rather than as a crash.
+      if (!pendingImport(old.dir)) await closeBranch(old);
     } finally {
-      await old.memory.close(); await old.unlock(); active = undefined;
+      await old.memory.close(); await old.branch.release(); active = undefined;
       run = []; previous = []; logged = 0; keep = 0; view = undefined; runStarted = false; receipts.clear(); prompt = ''; idle = () => true;
       untitle?.(); untitle = undefined; title.clear(); working = false;
     }
@@ -189,53 +230,116 @@ export default function optchat(pi: ExtensionAPI) {
     if (!name) return undefined;
     createProfile(name); return name;
   };
+  const mountNav = (ctx: ExtensionContext) => {
+    unmountNavigation?.(); unmountNavigation = undefined;
+    const a = active;
+    if (a && ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, a.children, a.memory, shortcut, page => { void inspect(ctx, page); });
+  };
+  /** Every minute (or OPTCHAT_IDLE_MS / 2): once the log has stood still for the Merge when idle time, merge what's new. */
+  let idleTimer: ReturnType<typeof setInterval> | undefined;
+  const watchIdle = (ctx: ExtensionContext) => {
+    clearInterval(idleTimer);
+    const a = active;
+    if (!a) return;
+    idleTimer = setInterval(() => {
+      const wait = idleMs(a.config), { branch, memory } = a;
+      if (active !== a || !wait || stopping || importing) return;
+      if (memory.root.length !== branch.length) { branch.length = memory.root.length; branch.changed = Date.now(); return; }
+      if (runStarted || !idle() || memory.root.length <= branch.merged || Date.now() - branch.changed < wait) return;
+      void merge(a, 'idle', warning => ctx.ui.notify(warning, 'warning'))
+        .then(result => { if (result.added) ctx.ui.notify(`OptChat merged ${result.added} messages into ${a.name}'s shared memory (idle).`, 'info'); status(ctx); })
+        .catch(error => ctx.ui.notify(`OptChat could not merge while idle: ${errorText(error)}`, 'warning'));
+    }, Math.min(60_000, Math.max(50, (idleMs(a.config) || 60_000) / 2)));
+    idleTimer.unref();
+  };
+  /** Once this branch's view has started a batch merge (its cached prefix is gone anyway) and another session has merged since
+   * this one started, merge this one and start again from the trunk's end, so it sees what the others did. */
+  const rebase = async (a: Active, ctx: ExtensionContext) => {
+    const { branch } = a;
+    if (a.memory.batches <= branch.seen) return;
+    branch.seen = a.memory.batches;
+    const warn = (warning: string) => ctx.ui.notify(warning, 'warning');
+    const before = await trunkState(a.dir, warn);
+    if (!before.foreign(branch.info.id, branch.info.base)) return;
+    ctx.ui.setWorkingMessage('OptChat: catching up with the other sessions on this profile…');
+    try {
+      const old = a.memory;
+      // A subagent can log a line while the merge waits for the lock; merge until nothing is left behind.
+      for (let tries = 0; tries < 3 && branch.merged < old.root.length; tries++) await merge(a, 'rebase', warn);
+      if (branch.merged < old.root.length) throw new Error('the log kept growing');
+      await old.close();
+      const trunk = await trunkState(a.dir, warn);
+      resetBranch(branch.dir, branch.info, trunk.length, trunk.view);
+      const memory = await openBranchMemory(a.dir, branch.dir, branch.info, a.compress, warning => ctx.ui.notify(warning, 'error'), undefined, a.config.jobs);
+      a.memory = memory; a.children.memory = memory;
+      Object.assign(branch, { merged: memory.root.length, seen: memory.batches, length: memory.root.length, changed: Date.now() });
+      mountNav(ctx);
+      ctx.ui.notify(`OptChat caught up with the other sessions on ${a.name}: this session now starts from message ${branch.info.base}.`, 'info');
+    } catch (error) {
+      // A memory left closed can't log the turn: stop it here rather than lose what it says.
+      if (a.memory.closed) fault = `OptChat could not catch up with the other sessions: ${errorText(error)}. Restart Pi.`;
+      ctx.ui.notify(`OptChat could not catch up with the other sessions: ${errorText(error)}`, 'warning');
+    } finally { ctx.ui.setWorkingMessage(); }
+  };
   const openProfile = async (name: string, ctx: ExtensionContext) => {
     const dir = profilePath(name);
     if (!existsSync(dir)) throw new Error(`Profile ${name} does not exist. Use /optchat profile to create it.`);
-    const unlock = await holdProfile(storeFor(dir), dir, name, `${name} · PID ${process.pid} · ${hostname()} · ${ctx.cwd}`, warning => ctx.ui.notify(warning, 'warning'));
+    const config = loadConfig(dir);
+    const quiet = (warning: string) => ctx.ui.notify(warning, 'warning');
+    // Sessions whose Pi crashed or was killed are merged first, so this one starts with what they said.
+    const recovered = await recoverBranches(dir, quiet);
+    if (recovered.length) ctx.ui.notify(`OptChat merged ${recovered.length} session${recovered.length === 1 ? '' : 's'} that ended without closing (${recovered.join(', ')}) into ${name}'s shared memory.`, 'info');
+    const started = await startBranch(dir, ctx.cwd, quiet);
     let openingMemory: Memory | undefined;
     try {
-      const config = loadConfig(dir);
       const sessionId = ctx.sessionManager.getSessionId();
       const usage = new UsageLedger(dir);
       usage.backfill(ctx.sessionManager.getEntries(), sessionId);
-      const pending = join(dir, 'pending-reports.json');
+      const pending = join(started.dir, 'pending-reports.json');
       const saved: unknown = existsSync(pending) ? JSON.parse(readFileSync(pending, 'utf8')) : [];
       if (!Array.isArray(saved) || !saved.every(isPendingReport)) throw new Error('Invalid pending report journal.');
-      const memory = await Memory.open(memoryDirectory(dir), createCompressor(ctx.modelRegistry, () => config.compactor, message => {
+      const compress = createCompressor(ctx.modelRegistry, () => config.compactor, message => {
         usage.compression(message, 'compactor', sessionId);
         status(ctx);
-      }, () => config.summaryAcceptBytes), warning => ctx.ui.notify(warning, 'error'), undefined, config.jobs);
+      }, () => config.summaryAcceptBytes);
+      const memory = await openBranchMemory(dir, started.dir, started.info, compress, warning => ctx.ui.notify(warning, 'error'), undefined, config.jobs);
       openingMemory = memory;
-      const inbox = new Inbox(dir);
-      const recovered = pendingImport(dir) ? 0 : inbox.recover(memory);
-      if (recovered) ctx.ui.notify(`Recovered ${recovered} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
+      const inbox = new Inbox(started.dir);
+      const recoveredInputs = pendingImport(dir) ? 0 : inbox.recover(memory);
+      if (recoveredInputs) ctx.ui.notify(`Recovered ${recoveredInputs} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
       const children = new Children(memory, ctx.modelRegistry, () => config.subagent, () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}`,
-        deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports });
+        deliverReport, text => ctx.ui.notify(text, 'error'), started.dir, { parentSession: sessionId, usage, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
       // Reports a crash held back with their unfinished siblings are delivered now, as they are.
       reports = saved.map(s => typeof s === 'string' ? { text: s } : { text: s.text, count: s.count })
         .filter(r => !loggedReports.has(reportReceipt(r.text)));
       atomicWrite(pending, JSON.stringify(reports));
       rememberProfile(name);
-      active = { name, dir, config, memory, inbox, children, usage, unlock }; fault = undefined; idle = () => ctx.isIdle();
+      const branch: Branch = { ...started, merged: memory.root.length, seen: memory.batches, length: memory.root.length, changed: Date.now() };
+      active = { name, dir, config, memory, inbox, children, usage, branch, compress }; fault = undefined; idle = () => ctx.isIdle();
+      started.setStatus({ cwd: ctx.cwd, pid: process.pid, created: started.info.created });
       await restoreMain(ctx, active);
-      if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); });
+      mountNav(ctx);
+      watchIdle(ctx);
       untitle = children.subscribe(() => showTitle(ctx)); showTitle(ctx);
       status(ctx);
-      ctx.ui.notify(`${brand} · ${name} · ${memory.root.length} messages\nCompactor: ${config.compactor.provider}/${config.compactor.model} (${config.compactor.thinking})`, 'info');
+      const others = (await Promise.all(listBranches(dir).filter(b => !b.closed && b.id !== started.info.id).map(b => liveStatus(dir, b.id)))).filter(Boolean).length;
+      ctx.ui.notify(`${brand} · ${name} · branch ${started.info.id} · ${memory.root.length} messages${others ? ` · ${others} other session${others === 1 ? '' : 's'} open` : ''}\nCompactor: ${config.compactor.provider}/${config.compactor.model} (${config.compactor.thinking})`, 'info');
       const queuedReports = [...reports];
       // Only an interactive Pi picks cut-off subagents up: a one-shot headless run would stop them again as it exits.
       if (!pendingImport(dir) && ctx.mode === 'tui') recovery = children.resumeCutOff().catch(error => ctx.ui.notify(`Resuming subagents: ${errorText(error)}`, 'error'));
       setImmediate(() => { if (active?.memory === memory && !pendingImport(dir)) for (const r of queuedReports) sendReport(r); });
     } catch (error) {
       untitle?.(); untitle = undefined; title.clear();
+      clearInterval(idleTimer); idleTimer = undefined;
       if (active && active.memory === openingMemory) {
         unmountNavigation?.(); unmountNavigation = undefined;
         await active.children.close(); active = undefined;
       }
       await openingMemory?.close();
-      await unlock(); throw error;
+      // Nothing was said in it: a branch that never opened is closed as it is (merging adds nothing).
+      try { closeInfo(started.dir, started.info); } catch { /* the next start recovers it */ }
+      await started.release(); throw error;
     }
   };
 
@@ -369,6 +473,8 @@ export default function optchat(pi: ExtensionAPI) {
           const text = `Waiting for OptChat summaries…${error ? ` failing: ${oneLine(error)}${error.includes('/optchat') ? '' : ' (see /optchat model)'}` : ''}`;
           if (text !== shown) ctx.ui.setWorkingMessage(shown = text);
         };
+        await rebase(a, ctx);
+        if (fault) throw new Error(fault);
         show();
         const unsubscribe = a.memory.onChange(show);
         try { await a.memory.settle(ctx.signal); } finally { unsubscribe(); ctx.ui.setWorkingMessage(); }
@@ -419,12 +525,18 @@ export default function optchat(pi: ExtensionAPI) {
     working = false; showTitle(ctx);
     if (active) {
       const dir = active.dir;
-      checkpoints = checkpoints.then(() => checkpoint(dir)).catch(error => ctx.ui.notify(`Local checkpoint failed: ${errorText(error)}`, 'error'));
+      // Sessions on the same profile take turns; one that finds another committing skips this checkpoint, and the next one covers it.
+      checkpoints = checkpoints.then(async () => {
+        let release: (() => Promise<void>) | undefined;
+        try { release = await takeLock(lockPath(dir, 'checkpoint'), () => `checkpoint by PID ${process.pid}`); }
+        catch (error) { if (error instanceof LockBusy) return; throw error; }
+        try { await checkpoint(dir); } finally { await release(); }
+      }).catch(error => ctx.ui.notify(`Local checkpoint failed: ${errorText(error)}`, 'error'));
       await checkpoints;
     }
   });
   registerReportRenderer(pi);
-  const [zoom, date] = memoryTools(() => required().memory, id => required().children.transcript(id));
+  const [zoom, date] = memoryTools(() => required().memory, id => required().children.transcript(id) ?? otherTranscript(required().dir, id));
   pi.registerTool(zoom); pi.registerTool(date);
   pi.registerTool({ ...searchTool(() => required().memory), defaultActive: false });
   // The tool and its prompt line change together, once per toggle, so the cached prefix is otherwise stable.
@@ -488,6 +600,10 @@ export default function optchat(pi: ExtensionAPI) {
       const a = required();
       if (!ctx.hasUI) throw new Error('/optchat import requires interactive Pi.');
       if (!ctx.isIdle() || a.children.active || reports.length) throw new Error('Finish active work and pending reports before importing.');
+      // An import rebuilds the shared memory every session branches from, so it runs only with this session open.
+      const others = [];
+      for (const b of listBranches(a.dir)) if (!b.closed && b.id !== a.branch.info.id && await liveStatus(a.dir, b.id)) others.push(b.id);
+      if (others.length) throw new Error(`Close the other sessions on ${a.name} first (${others.join(', ')}): an import rewrites the memory they share.`);
       importing = true; importController = new AbortController(); let closed = false;
       status(ctx);
       const signal = importController.signal;
@@ -505,11 +621,14 @@ export default function optchat(pi: ExtensionAPI) {
           if (!plan) return;
           signal.throwIfAborted();
           flush(); a.inbox.recover(a.memory); await checkpoints; await a.memory.close(); closed = true;
+          await closeBranch(a);
           signal.throwIfAborted();
-          job = prepareImport(a.dir, a.memory, plan.entries, plan.mode);
+          // The import builds on the trunk, which now has everything this session said.
+          const trunk = new Memory(memoryDirectory(a.dir), () => Promise.reject(new Error('not summarizing')), warning => ctx.ui.notify(warning, 'warning'), undefined, 0);
+          try { job = prepareImport(a.dir, trunk, plan.entries, plan.mode); } finally { await trunk.close(); }
           if (!job) return;
         }
-        if (!closed) { await a.memory.close(); closed = true; }
+        if (!closed) { await a.memory.close(); closed = true; await closeBranch(a); }
         const compress = createCompressor(ctx.modelRegistry, () => a.config.compactor, message => {
           a.usage.compression(message, 'import', ctx.sessionManager.getSessionId());
         }, () => a.config.summaryAcceptBytes);

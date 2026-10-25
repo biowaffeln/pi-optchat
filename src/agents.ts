@@ -131,10 +131,13 @@ export class Children {
   private settling = 0;
   private readonly launches = new Set<Promise<unknown>>();
   private readonly completions = new Set<Promise<void>>();
-  constructor(private readonly memory: Memory, private readonly registry: ModelRegistry,
+  /** The branch's memory. A rebase replaces it; a run keeps reading the one it started with, whose ids its view uses. */
+  memory: Memory;
+  constructor(memory: Memory, private readonly registry: ModelRegistry,
     private readonly choice: () => ModelChoice, private readonly instructions: () => string,
     private readonly report: (text: string, options?: { once?: boolean; count?: number }) => Promise<void>, private readonly warn: (text: string) => void,
     private readonly profileDirectory = memory.directory, private readonly options: Options = {}) {
+    this.memory = memory;
     this.history = new RunHistory(profileDirectory);
     for (const warning of this.history.warnings) warn(warning);
     for (const run of this.history.records.values()) {
@@ -302,7 +305,7 @@ export class Children {
   /** Builds a child session with the same prompt, tools and extensions whether it is new or resumed. */
   private async open(o: { id: string; directory: string; depth: number; parentId?: string; model: Model<Api>;
     thinking?: ModelChoice['thinking']; sessionManager: SessionManager }) {
-    const { id, directory, depth, parentId } = o;
+    const { id, directory, depth, parentId } = o, memory = this.memory;
     const { subagentLevels, maxAgents, memorySearch } = this.settings, delegates = depth < subagentLevels;
     // The user's settings list their installed packages; a copy in memory keeps the child from writing them back.
     const settingsManager = SettingsManager.inMemory({ ...SettingsManager.create(directory, getAgentDir()).getSettings(),
@@ -331,7 +334,7 @@ export class Children {
     await loader.reload();
     const { session } = await (this.options.createSession ?? createAgentSession)({ cwd: directory, resourceLoader: loader, settingsManager,
       model: o.model, thinkingLevel: o.thinking, sessionManager: o.sessionManager,
-      customTools: [...memoryTools(() => this.memory, run => this.transcript(run, id)), ...(memorySearch ? [searchTool(() => this.memory)] : []), ...(delegates ? [...this.delegationTools(id, directory, subagentLevels, maxAgents), modelsTool(() => this)] : []), this.parentTool(id, parentId)],
+      customTools: [...memoryTools(() => memory, run => this.transcript(run, id)), ...(memorySearch ? [searchTool(() => memory)] : []), ...(delegates ? [...this.delegationTools(id, directory, subagentLevels, maxAgents), modelsTool(() => this)] : []), this.parentTool(id, parentId)],
       excludeTools: delegates ? [] : ['spawn', 'tell', 'models'],
     });
     // Callers track the session only after this returns: clean up here if its extensions fail to start.

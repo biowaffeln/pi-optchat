@@ -1,11 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { join } from 'node:path';
+import { basename, join, relative, sep } from 'node:path';
 import { record } from './cache.ts';
 import { memoryDirectory } from './import/job.ts';
 import { holder, lockPath, takeLock, withLock } from './locks.ts';
 import { bytes, end, flat, isEntry, Memory, start, type Entry, type Compressor, type Kind, type Summary } from './memory.ts';
+import { sessionMessages } from './runs.ts';
 import { reportReceipt } from './transcript.ts';
 import { atomicWrite, FileStore, type Mime, type Saved, type Store } from './store.ts';
 
@@ -26,13 +27,15 @@ export interface BranchInfo {
   /** The trunk's length when this branch started: messages before it are the trunk's, from it on the branch's own. */
   base: number;
   created: string; cwd: string; pid: number; host: string;
+  /** The trunk's memory folder, relative to the profile ('.' unless an import made a new generation): a branch merges only there. */
+  trunk?: string;
   /** Set when the branch closed and merged everything; a branch without it whose process is gone crashed. */
   closed?: string;
   /** Set when the branch asked to close, so a merge that failed after it is finished as a close, not as a crash. */
   closing?: boolean;
 }
 export type MergeReason = 'close' | 'idle' | 'rebase' | 'interrupted';
-export interface MergeResult { added: number; at: number; length: number; moved: boolean }
+export interface MergeResult { added: number; at: number; length: number; moved: boolean; copied: number }
 
 const BRANCHES = 'branches';
 const INFO = 'branch.json';
@@ -70,6 +73,8 @@ export async function liveStatus(profile: string, id: string) {
   return { id };
 }
 
+/** The trunk's memory folder relative to the profile. */
+const generation = (profile: string) => relative(profile, memoryDirectory(profile)).split(sep).join('/') || '.';
 const describe = (what: string) => () => JSON.stringify({ what, pid: process.pid, host: hostname() });
 
 /** The trunk's messages and nodes, read under its lock (a read mid-append would see a torn last line). */
@@ -102,7 +107,7 @@ export async function startBranch(profile: string, cwd: string, warn: (text: str
   try {
     await withLock(trunkLock(profile), describe(`starting branch ${id}`), () => {
       const trunk = readTrunk(profile, warn);
-      info.base = trunk.entries.length;
+      info.base = trunk.entries.length; info.trunk = generation(profile);
       // The trunk's saved view becomes the branch's: a branch that only grows from it reads the same prefix from the cache.
       if (trunk.saved.view !== undefined) atomicWrite(join(dir, 'view.json'), trunk.saved.view);
       saveInfo(dir, info);
@@ -144,6 +149,7 @@ const when = (date: string) => { const d = new Date(date); return Number.isNaN(d
 export async function mergeBranch(profile: string, dir: string, info: BranchInfo, entries: readonly Entry[], nodes: Iterable<Summary>,
   reason: MergeReason, warn: (text: string) => void = console.error): Promise<MergeResult> {
   return withLock(trunkLock(profile), describe(`merging branch ${info.id}`), () => {
+    if ((info.trunk ?? '.') !== generation(profile)) throw new Error(`Branch ${info.id} started from memory ${info.trunk ?? '.'}, but an import has since made ${generation(profile)} the profile's memory; its messages stay in ${dir}.`);
     const trunk = readTrunk(profile, warn);
     const mapped = new Map<number, number>();
     for (const e of trunk.entries) if (e.branch?.id === info.id) mapped.set(e.branch.i, e.i);
@@ -186,8 +192,7 @@ export async function mergeBranch(profile: string, dir: string, info: BranchInfo
     // Save the trunk's view as the trunk would have it now, so the next branch starts from it. Nothing is summarized here:
     // a missing node is built by the first branch whose view needs it.
     new Memory(trunk.directory, () => Promise.reject(new Error('not summarizing')), warn, undefined, 0).close().catch(() => {});
-    if (pending.length) warn(`Merged ${pending.length} messages of branch ${info.id} into the trunk at ${first}${moved ? ` (moved; ${copied} nodes kept)` : ''}.`);
-    return { added: pending.length, at: first, length: at, moved };
+    return { added: pending.length, at: first, length: at, moved, copied };
   });
 }
 function range(from: number, to: number, ok: (j: number) => boolean) {
@@ -268,4 +273,20 @@ export function appendLine(file: string, value: unknown) { appendFileSync(file, 
 export async function openBranchMemory(profile: string, dir: string, info: BranchInfo, compress: Compressor, warn: (text: string) => void, budget?: number, jobs?: number) {
   const store = new BranchStore(profile, dir, info.base, warn);
   return new Memory({ directory: dir, store, saved: await store.load() }, compress, warn, budget, jobs);
+}
+
+/** A subagent run's transcript from another branch of the profile, or from the profile's own `runs/` (before branches): each
+ * branch keeps its own runs, so a report merged from one can still be zoomed into from another. Read-only. */
+export function otherTranscript(profile: string, id: string) {
+  if (!/^[a-zA-Z0-9-]+$/.test(id)) return undefined;
+  const folders = [profile, ...listBranches(profile).map(info => branchDirectory(profile, info.id))];
+  for (const folder of folders) {
+    const file = join(folder, 'runs', `${id}.optchat.json`);
+    if (!existsSync(file)) continue;
+    try {
+      const run: unknown = JSON.parse(readFileSync(file, 'utf8'));
+      if (record(run) && typeof run.sessionFile === 'string') return sessionMessages(join(folder, 'runs', basename(run.sessionFile)));
+    } catch { return undefined; }
+  }
+  return undefined;
 }

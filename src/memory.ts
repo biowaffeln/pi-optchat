@@ -241,6 +241,8 @@ export class Memory {
   get pending() { return this.unbuilt.size; }
   get active() { return this.busy.size; }
   get size() { return this.chat.size; }
+  /** Closed: it still reads, but takes no more messages. */
+  get closed() { return this.stopped; }
   /** Batch merges the chat's view has started since this memory opened. */
   get batches() { return this.chat.batches; }
   /** Summaries built out of the backlog since it was last empty, and when the next failed one is retried. */
