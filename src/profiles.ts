@@ -5,12 +5,14 @@ import type { ModelChoice } from './compactor.ts';
 import { record } from './cache.ts';
 import { atomicWrite } from './store.ts';
 import { DEFAULT_SETTINGS, readSettings, type Settings } from './settings.ts';
+import { invalidRoles, type Roles } from './roles.ts';
 
 export const isWindows = process.platform === 'win32';
 
 export const dataHome = () => resolve(process.env.OPTCHAT_HOME ?? join(homedir(), '.optchat'));
-/** `main` is the last model and thinking level picked in Pi while this profile was open; absent until one is picked. */
-export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; main?: ModelChoice }
+/** `main` is the last model and thinking level picked in Pi while this profile was open; absent until one is picked.
+ * `roles` replaces the built-in spawn roles (see roles.ts) when present; it is edited in config.json only. */
+export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; main?: ModelChoice; roles?: Roles }
 export const defaults: ProfileConfig = {
   compactor: { provider: 'anthropic', model: 'claude-sonnet-5-5', thinking: 'medium' },
   subagent: { provider: 'anthropic', model: 'claude-opus-5-5', thinking: 'high' },
@@ -49,8 +51,10 @@ function modelChoice(value: unknown): value is ModelChoice {
 export function loadConfig(dir: string): ProfileConfig {
   const value: unknown = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
   if (!record(value) || !modelChoice(value.compactor) || !modelChoice(value.subagent) || value.main !== undefined && !modelChoice(value.main)) throw new Error(`Invalid profile config: ${dir}/config.json`);
-  const { compactor, subagent, main } = value;
-  try { return { compactor, subagent, ...main && { main }, ...readSettings(value) }; }
+  const { compactor, subagent, main, roles } = value;
+  const problem = roles === undefined ? undefined : invalidRoles(roles);
+  if (problem) throw new Error(`Invalid profile config: ${dir}/config.json: ${problem}`);
+  try { return { compactor, subagent, ...main && { main }, ...roles !== undefined && { roles: roles as Roles }, ...readSettings(value) }; }
   catch (error) { throw new Error(`Invalid profile config: ${dir}/config.json: ${error instanceof Error ? error.message : String(error)}`); }
 }
 export function instructions(dir: string) { return readFileSync(join(dir, 'AGENTS.md'), 'utf8'); }
