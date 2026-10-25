@@ -65,6 +65,15 @@ export async function reopenWorktree(tree: Worktree) {
 /** A settle that stopped partway. Its message is the line for the report: what was done, what was left where, and why. */
 export class SettleError extends Error {}
 const reason = (error: unknown) => error instanceof Error ? error.message : String(error);
+/** git, tried once more after a short pause when a lock was in the way: runs settling at the same time in one repository can collide on its ref locks. */
+async function retried(cwd: string, ...args: string[]) {
+  try { return await git(cwd, ...args); }
+  catch (error) {
+    if (!/\.lock\b|cannot lock/i.test(reason(error))) throw error;
+    await new Promise(resolve => setTimeout(resolve, 300 + Math.random() * 300));
+    return git(cwd, ...args);
+  }
+}
 
 /**
  * Why the worktree's changes can't safely be committed on its branch, or undefined when they can: its HEAD must be the branch
@@ -97,7 +106,7 @@ export async function finishWorktree(tree: Worktree, message: string) {
         // Works without a configured identity too. Hooks and signing are skipped: a failing hook, or a signer that wants a
         // passphrase with no terminal to ask on, would strand the worktree on every settle.
         const identity = await quietly(tree.path, 'config', 'user.email') ? [] : ['-c', 'user.name=OptChat', '-c', 'user.email=optchat@localhost'];
-        await git(tree.path, ...identity, ...NO_HOOKS, '-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-q', '-m', message);
+        await retried(tree.path, ...identity, ...NO_HOOKS, '-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-q', '-m', message);
       }
     } catch (error) { throw new SettleError(`${where} could not be committed, so it was left as it is: ${reason(error)}`); }
   }
@@ -108,12 +117,12 @@ export async function finishWorktree(tree: Worktree, message: string) {
   } catch (error) { throw new SettleError(`${where} was left in place, since its branch could not be read: ${reason(error)}`); }
   const kept = commits > 0 ? `Its changes are on branch ${tree.branch} in ${tree.repo} (${commits} commit${commits === 1 ? '' : 's'} past ${tree.base.slice(0, 7)})` : '';
   try {
-    if (existsSync(tree.path)) await git(tree.repo, 'worktree', 'remove', '--force', tree.path);
+    if (existsSync(tree.path)) await retried(tree.repo, 'worktree', 'remove', '--force', tree.path);
     else await quietly(tree.repo, 'worktree', 'prune');
   } catch (error) { throw new SettleError(`${kept ? `${kept}, but its` : 'Its'} worktree ${tree.path} could not be removed: ${reason(error)}`); }
   if (kept) return `${kept}; its worktree was removed.`;
   if (branch) {
-    try { await git(tree.repo, 'branch', '-D', tree.branch); }
+    try { await retried(tree.repo, 'branch', '-D', tree.branch); }
     catch (error) { throw new SettleError(`It changed no files, so its worktree was removed, but its empty branch ${tree.branch} could not be deleted: ${reason(error)}`); }
   }
   return `It changed no files, so its worktree and branch ${tree.branch} were removed.`;

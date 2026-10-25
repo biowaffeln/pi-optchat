@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createWorktree, finishWorktree, reopenWorktree, repoOf, SettleError } from '../src/worktree.ts';
@@ -93,6 +93,19 @@ test('settling commits without signing or hooks, and making a worktree runs no h
     await reopenWorktree(tree);
     await finishWorktree(tree, 'again');
     assert.ok(!existsSync(marker), 'no hook ran');
+  } finally { removeDir(dir); }
+});
+
+test('a ref lock held briefly by another settle is waited out once', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-wt-lock-')), path = repo(dir);
+  try {
+    const { tree } = await createWorktree(path, id()), lock = join(path, '.git', 'refs', 'heads', `${tree.branch}.lock`);
+    writeFileSync(join(tree.path, 'made.txt'), 'made\n');
+    writeFileSync(lock, '');
+    const released = new Promise<void>(resolve => setTimeout(() => { rmSync(lock); resolve(); }, 250));
+    assert.match(await finishWorktree(tree, 'locked'), /1 commit past/);
+    await released;
+    assert.equal(git(path, 'show', `${tree.branch}:made.txt`), 'made');
   } finally { removeDir(dir); }
 });
 
