@@ -32,6 +32,11 @@ function primeFirst() {
       signal.removeEventListener('abort', wake);
       signal.throwIfAborted();
     }
+    // This call reads every warm entry its prefix starts with, and a read keeps Anthropic's entry alive, so they stay warm here too
+    // (the recipe's AskAI bumps a hit's TTL the same way). Otherwise a merge whose view ends at an older block would find its entry
+    // stale after 4 minutes of steady use and make the calls behind it wait for a primer they don't need.
+    const now = Date.now();
+    for (const [k, state] of warm) if (typeof state === 'number' && now - state < WARM_MS && prefix.startsWith(k)) warm.set(k, now);
     let release = () => {};
     const pending = warm.has(prefix) ? undefined : new Promise<void>(resolve => { release = resolve; });
     if (pending) warm.set(prefix, pending);

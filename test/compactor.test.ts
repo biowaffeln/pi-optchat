@@ -156,3 +156,22 @@ test('a refusal the model itself stops with is final, without asking again', { t
   await assert.rejects(reply, Refused);
   assert.equal(calls.length, 1);
 });
+
+test('a warm view stays warm while longer views read it, so an older merge view still skips the primer after 4 minutes', { timeout: 5000 }, async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const { calls, run, settle, view } = await setup();
+  const longer = view.replace('</chat>', '0+1|user: a newer line\n'.repeat(4) + '</chat>');
+  const primer = run('a');
+  await settle(); calls[0].answer(); calls[0].finish(); await primer;
+  for (let minute = 1; minute <= 5; minute++) {
+    t.mock.timers.setTime(Date.now() + 60_000);
+    const reading = run(`longer ${minute}`, longer);
+    await settle(); calls.at(-1)!.answer(); calls.at(-1)!.finish(); await reading;
+  }
+  // Five minutes after its primer, but read a minute ago by a longer view: two calls on the older view both start at once.
+  const older = [run('b'), run('c')];
+  await settle();
+  assert.deepEqual(calls.slice(-2).map(c => c.source), ['b', 'c'], 'neither waits for a primer');
+  calls.slice(-2).forEach(c => { c.answer(); c.finish(); });
+  await Promise.all(older);
+});
