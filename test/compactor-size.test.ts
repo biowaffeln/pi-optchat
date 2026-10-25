@@ -16,6 +16,7 @@ import { removeDir } from './support.ts';
 let sentReasoning: string | undefined;
 let sentStep = '';
 let sentRetry = '';
+let sentMessages = 0;
 /** A fake model whose first reply is `first` bytes long and whose retries fit. */
 async function attempts(first: number, { source = 'user: ' + 'a long message '.repeat(70), merge = false, accepted, first: text = 'x', firstEnd, ends = 1 }:
   { source?: string; merge?: boolean; accepted?: number; first?: string; firstEnd?: 'length' | 'toolUse'; ends?: number } = {}) {
@@ -30,8 +31,9 @@ async function attempts(first: number, { source = 'user: ' + 'a long message '.r
       sentReasoning = options?.reasoning;
       const request = context.messages.find(m => m.role === 'user')?.content;
       sentStep = Array.isArray(request) ? request.map(c => c.type === 'text' ? c.text : '').at(-1) ?? '' : request ?? '';
-      const last = context.messages.at(-1);
-      sentRetry = context.messages.length > 1 && last?.role === 'user' && typeof last.content === 'string' ? last.content : '';
+      sentMessages = context.messages.filter(m => m.role !== 'system').length;
+      sentRetry = Array.isArray(request) && request.length > 2 && request[2].type === 'text' ? request[2].text : '';
+      if (Array.isArray(request) && request.length > 2) sentStep = request.map(c => c.type === 'text' ? c.text : '')[1];
       const stream = createAssistantMessageEventStream();
       const end = calls < ends ? firstEnd ?? 'stop' : 'stop';
       const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: calls++ ? 'x'.repeat(400) : text.repeat(first) },
@@ -90,7 +92,9 @@ test('a line over the limit is sent back with the recipe\'s "Too long" cut, and 
   assert.deepEqual(await attempts(700, { source }), { calls: 2, bytes: 400 });
   assert.ok(sentStep.startsWith('\n\nCompaction:'), 'the task starts its own paragraph: OpenAI joins text blocks with nothing between them');
   assert.ok(sentStep.endsWith(`<input>\n${source}\n</input>`));
-  assert.equal(sentRetry, `Too long: your line is 700 bytes, over the 512-byte limit. Write\nthe whole line again for the same <input>, cutting just enough of the\nleast valuable items to fit before this cut:\n${'x'.repeat(NODE)}| ← LIMIT`);
+  assert.equal(sentMessages, 1, 'a retry is one user message: the earlier reply and its thinking are not sent again');
+  assert.ok(sentStep.endsWith(`<input>\n${source}\n</input>`), 'the retry keeps the task as it was');
+  assert.equal(sentRetry, `\n\nToo long: your line is 700 bytes, over the 512-byte limit. Write\nthe whole line again for the same <input>, cutting just enough of the\nleast valuable items to fit before this cut:\n${'x'.repeat(NODE)}| ← LIMIT`);
   assert.deepEqual(await attempts(1, { first: '12+4|user: kept' }), { calls: 1, bytes: 'user: kept'.length });
 });
 

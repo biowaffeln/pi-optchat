@@ -65,7 +65,9 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     const thinking = reasoningFor(model, selected.thinking);
     const step = `${input.historical ? IMPORT_GUIDANCE + '\n\n' : ''}${compaction(input)}`;
     // OpenAI joins text blocks with nothing between them, so the task starts its own paragraph after the view.
-    const messages: Message[] = [{ role: 'user', content: [{ type: 'text', text: input.context }, { type: 'text', text: `\n\n${step}` }], timestamp: Date.now() }];
+    const request = (note?: string): Message[] => [{ role: 'user', timestamp: Date.now(),
+      content: [{ type: 'text', text: input.context }, { type: 'text', text: `\n\n${step}` }, ...note ? [{ type: 'text' as const, text: `\n\n${note}` }] : []] }];
+    let messages = request();
     const view = splitView(input.context);
     const prefix = model.api === 'anthropic-messages' && view.length > 1 ? `${model.provider}/${model.id}/${thinking ?? 'off'}\n${view.slice(0, -1).join('')}` : undefined;
     const tries: string[] = [];
@@ -99,8 +101,9 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
       tries.push(line);
       // A merge of two short lines can come back nearly as big as both, so a line must also shrink what it replaces.
       if (bytes(line) <= accepted() && bytes(line) < bytes(input.source)) break;
-      messages.push(reply);
-      messages.push({ role: 'user', content: tooLong(bytes(line), cut(line)), timestamp: Date.now() });
+      // As in the recipe, a retry sends the same blocks plus one note on the last line's size and where the limit cuts it,
+      // never the earlier replies or their thinking: the request stays the same size, and the model isn't anchored on its own line.
+      messages = request(tooLong(bytes(line), cut(line)));
     }
     if (!tries.length) throw new Refused('Compactor returned no whole line in 5 tries.');
     return tries.reduce((a, b) => bytes(a) <= bytes(b) ? a : b);
