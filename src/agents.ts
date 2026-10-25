@@ -2,14 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, getAgentDir, type AgentSession, type AgentSessionEvent, type ExtensionAPI, type InlineExtension, type ModelRegistry } from '@earendil-works/pi-coding-agent';
+import { createAgentSession, createFindToolDefinition, createGrepToolDefinition, createLsToolDefinition, createReadToolDefinition, DefaultResourceLoader, SessionManager, SettingsManager, getAgentDir, type AgentSession, type AgentSessionEvent, type ExtensionAPI, type InlineExtension, type ModelRegistry, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import * as sdk from '@earendil-works/pi-coding-agent';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { StringEnum, type Api, type Model } from '@earendil-works/pi-ai';
-import { allowSearch, cutOffChildren, delegation, NO_DELEGATION, READ_ONLY, RESTARTED, SEARCH_DOC, STEERABLE, SUBAGENT, SUBAGENT_NO_MEMORY, TELL_PARENT, VIEW_DOC, worktreeDoc } from './prompts.ts';
+import { allowSearch, cutOffChildren, delegation, NO_DELEGATION, READ_ONLY, READ_ONLY_BASH, READ_ONLY_NO_BASH, RESTARTED, SEARCH_DOC, STEERABLE, SUBAGENT, SUBAGENT_NO_MEMORY, TELL_PARENT, VIEW_DOC, worktreeDoc } from './prompts.ts';
 import { DEFAULT_ROLES, TOOL_SETS, type Roles, type ToolSet } from './roles.ts';
 import { createWorktree, discardWorktree, finishWorktree, reopenWorktree, repoOf, workingDirectory, type Worktree } from './worktree.ts';
 import { memoryTools, searchTool } from './tools.ts';
+import { findSandbox, READ_ONLY_TOOLS, sandboxedBashTool, type Sandbox } from './sandbox.ts';
 import { VIEW, type Kind, type Memory } from './memory.ts';
 import type { ModelChoice } from './compactor.ts';
 import { cachePayload } from './cache.ts';
@@ -51,7 +52,9 @@ interface Options { parentSession?: string; usage?: UsageLedger; createSession?:
   /** Read on every spawn, so a changed profile setting applies to the next one. Missing settings take their defaults. */
   settings?: () => Partial<Settings>;
   /** The roles a task may name; the built-in ones when unset. */
-  roles?: () => Roles }
+  roles?: () => Roles;
+  /** The sandbox a read-only child's bash runs in; `findSandbox` when unset. Undefined from it means no bash. */
+  sandbox?: () => Sandbox | undefined }
 
 // Subagents load the user's installed extensions, except any copy of OptChat itself: they get memory tools directly and must not open a profile.
 const packageName = (path: string): string | undefined => {
@@ -73,7 +76,7 @@ export const TASKS = Type.Array(Type.Object({ task: Type.String(), cwd: Type.Opt
   role: Type.Optional(Type.String({ description: 'A role from your instructions (scout, reviewer, ...): presets model, thinking, tools and memory for the task. Pick one freely when it fits; fields set on the task override it.' })),
   model: Type.Optional(Type.String({ description: 'Leave unset for the role\'s or the profile\'s subagent model (named in your instructions). Set only when the user asks for a model, as provider/id from models().' })),
   thinking: Type.Optional(StringEnum(THINKING, { description: 'Leave unset for the role\'s or the profile\'s subagent level. Set only when the user asks for one.' })),
-  tools: Type.Optional(StringEnum(TOOL_SETS, { description: '"all" (default) or "readonly": no edit or write tools. Bash stays, so read-only is a rule the subagent is asked to keep, not a sandbox; extension tools stay too.' })),
+  tools: Type.Optional(StringEnum(TOOL_SETS, { description: '"all" (default) or "readonly": only read, grep, find, ls and bash (no edit, write or extension tools), with bash run in a sandbox that blocks file writes outside temp directories. Without a sandbox (macOS sandbox-exec, Linux bwrap) bash is left out. The network stays open.' })),
   memory: Type.Optional(Type.Boolean({ description: 'Default true: the subagent gets the memory view and zoom/date. false: only your task text (plus AGENTS.md and skills), so write a complete brief.' })),
   isolation: Type.Optional(StringEnum(['worktree'] as const, { description: '"worktree": the subagent works in its own git worktree on a new branch optchat/<id> from the HEAD of the repo holding cwd. On finish, its changes are committed on that branch (named in its report); with none, worktree and branch are removed.' })) }), { minItems: 1 });
 export type Task = Static<typeof TASKS>[number];
@@ -87,9 +90,11 @@ export const modelsTool = (children: () => Children) => ({ name: 'models', label
   parameters: Type.Object({ provider: Type.Optional(Type.String()) }),
   execute: async (_id: string, args: { provider?: string }) => result(children().models(args.provider)) });
 const isOptchat = (path: string) => packageName(path) === 'pi-optchat';
-/** Pi's built-in tools that change files, left out of a read-only child; bash stays (see READ_ONLY in prompts.ts). */
-export const READ_ONLY_EXCLUDED = ['edit', 'write'];
-const READ_ONLY_ADDED = ['read', 'grep', 'find', 'ls'];
+/**
+ * The tools a read-only child may have, an allowlist rather than a list of what to leave out, so an extension's tool that
+ * writes can't slip through: Pi's read-only tools, bash only when it can run sandboxed, and OptChat's own tools by name.
+ */
+export const readOnlyAllowlist = (own: Iterable<string>, bash: boolean) => [...new Set([...READ_ONLY_TOOLS.filter(name => bash || name !== 'bash'), ...own])];
 
 // Pi's CLI adds its built-in extensions (MCP, codemode, tool search) to its own session; SDK sessions such as
 // subagents must add them. Pi versions that do not export a factory simply do not get that extension.
@@ -357,6 +362,8 @@ export class Children {
   private async open(o: { id: string; directory: string; depth: number; parentId?: string; model: Model<Api>;
     thinking?: ModelChoice['thinking']; sessionManager: SessionManager } & ChildOptions) {
     const { id, directory, depth, parentId } = o, memory = this.memory, readonly = o.tools === 'readonly';
+    // Fails closed: with no sandbox to run it in, a read-only child gets no bash at all.
+    const sandbox = readonly ? (this.options.sandbox ?? findSandbox)() : undefined;
     const { subagentLevels, maxAgents, memorySearch } = this.settings, delegates = depth < subagentLevels;
     // The user's settings list their installed packages; a copy in memory keeps the child from writing them back.
     const settingsManager = SettingsManager.inMemory({ ...SettingsManager.create(directory, getAgentDir()).getSettings(),
@@ -364,7 +371,8 @@ export class Children {
     const loader = new DefaultResourceLoader({ cwd: directory, agentDir: getAgentDir(), settingsManager,
       noPromptTemplates: true,
       extensionsOverride: base => ({ ...base, extensions: base.extensions.filter(e => !isOptchat(e.resolvedPath)) }),
-      extensionFactories: [...builtinExtensions(this.options.builtins?.() ?? []), pi => {
+      // MCP, codemode and tool search only reach tools a read-only child may not have, so it does without them.
+      extensionFactories: [...readonly ? [] : builtinExtensions(this.options.builtins?.() ?? []), pi => {
         const provider = this.registry.getRegisteredProviderConfig(o.model.provider);
         if (provider) pi.registerProvider(o.model.provider, provider);
         // Same prompt as the main agent (AGENTS.md files, skills, cwd); only the OptChat preamble differs.
@@ -372,7 +380,7 @@ export class Children {
         pi.on('before_agent_start', event => {
           event.systemPromptOptions.customPrompt = o.memory ? allowSearch(`${SUBAGENT}\n\n${VIEW_DOC}${memorySearch ? SEARCH_DOC : ''}`, memorySearch) : SUBAGENT_NO_MEMORY;
           event.systemPromptOptions.sections.instructions = [this.instructions(), delegates ? delegation(maxAgents, this.choice(), this.roles) : NO_DELEGATION, STEERABLE, TELL_PARENT,
-            readonly ? READ_ONLY : '', o.worktree ? worktreeDoc(o.worktree.branch, o.worktree.repo) : ''].filter(Boolean).join('\n\n');
+            readonly ? READ_ONLY : '', readonly ? sandbox ? READ_ONLY_BASH : READ_ONLY_NO_BASH : '', o.worktree ? worktreeDoc(o.worktree.branch, o.worktree.repo) : ''].filter(Boolean).join('\n\n');
           refreshContextFiles(event.systemPromptOptions);
         });
         pi.on('before_provider_request', async (event, ctx) => {
@@ -384,19 +392,24 @@ export class Children {
       }],
     });
     await loader.reload();
+    const own = [...(o.memory ? memoryTools(() => memory, run => this.transcript(run, id)) : []), ...(o.memory && memorySearch ? [searchTool(() => memory)] : []), ...(delegates ? [...this.delegationTools(id, directory, subagentLevels, maxAgents), modelsTool(() => this)] : []), this.parentTool(id, parentId)];
     const { session } = await (this.options.createSession ?? createAgentSession)({ cwd: directory, resourceLoader: loader, settingsManager,
       model: o.model, thinkingLevel: o.thinking, sessionManager: o.sessionManager,
-      customTools: [...(o.memory ? memoryTools(() => memory, run => this.transcript(run, id)) : []), ...(o.memory && memorySearch ? [searchTool(() => memory)] : []), ...(delegates ? [...this.delegationTools(id, directory, subagentLevels, maxAgents), modelsTool(() => this)] : []), this.parentTool(id, parentId)],
-      excludeTools: [...delegates ? [] : ['spawn', 'tell', 'models'], ...readonly ? READ_ONLY_EXCLUDED : []],
+      customTools: [...own, ...readonly ? this.readOnlyTools(directory, settingsManager, sandbox) : []],
+      // Pi registers only the allowlisted tools, so the others can't be activated later or reached through another tool.
+      tools: readonly ? readOnlyAllowlist(own.map(tool => tool.name), !!sandbox) : undefined,
+      excludeTools: delegates ? [] : ['spawn', 'tell', 'models'],
     });
     // Callers track the session only after this returns: clean up here if its extensions fail to start.
-    try {
-      await session.bindExtensions({});
-      // Pi's default tools are read, bash, edit and write; a read-only child trades edit and write for Pi's read-only search tools.
-      if (readonly) session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), ...READ_ONLY_ADDED])]);
-    }
+    try { await session.bindExtensions({}); }
     catch (error) { await this.shutdown(session); this.dispose(session); throw error; }
     return session;
+  }
+  /** Pi's read-only tools and the sandboxed bash, given as the session's own tools so an extension's tool of the same name can't replace them.
+   * Typed loosely: each definition is typed by its own schema, which customTools' plain ToolDefinition does not accept. */
+  private readOnlyTools(cwd: string, settings: SettingsManager, sandbox: Sandbox | undefined): ToolDefinition<any, any>[] {
+    return [createReadToolDefinition(cwd, { autoResizeImages: settings.getImageAutoResize() }), createGrepToolDefinition(cwd), createFindToolDefinition(cwd), createLsToolDefinition(cwd),
+      ...sandbox ? [sandboxedBashTool(cwd, sandbox, { shellPath: settings.getShellPath(), commandPrefix: settings.getShellCommandPrefix() })] : []];
   }
   private delegationTools(parentId: string, cwd: string, levels: number, maxAgents: number) {
     return [{ name: 'spawn', label: 'Delegate task', description: `Delegate parts of your task. Results arrive automatically after this run; never poll or sleep waiting. models() lists the ids a task's model may name. Maximum depth ${levels} and ${maxAgents} active agents per profile.`,

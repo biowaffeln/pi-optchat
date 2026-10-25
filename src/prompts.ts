@@ -155,8 +155,12 @@ Be aware of time. When your task is long, tell OptChat how far you are with
 tell_parent. Before you wait on something slow, such as CI, say so the same
 way ("pushed, now watching CI until it passes"), so OptChat can go on
 without you, then watch it.`;
-/** Added to a read-only subagent's instructions. Bash stays, so this is a rule it is asked to keep, not a sandbox. */
-export const READ_ONLY = 'You are read-only: you have no edit or write tools. Do not change files in any other way either (no bash redirects, sed -i, git commit, package installs); report what should change instead.';
+/** Added to a read-only subagent's instructions. Its tools enforce it: Pi registers only the allowlisted ones. */
+export const READ_ONLY = 'You are read-only: besides OptChat\'s own tools you have only read, grep, find and ls (and bash, see below); no edit, write or extension tools. Report what should change instead of changing it.';
+/** Added when its bash runs in a write-denying sandbox. */
+export const READ_ONLY_BASH = 'Your bash runs in a sandbox that blocks writing files anywhere except temp directories, so edits, git commits and package installs fail; do not try to work around it. Temp directories are fine for scratch files, and the network is open.';
+/** Added when no sandbox is available, so bash was left out rather than run unconfined. */
+export const READ_ONLY_NO_BASH = 'You have no bash: this machine has no sandbox to run it in read-only (macOS sandbox-exec or Linux bwrap), so it was left out. Use read, grep, find and ls.';
 /** Added to a subagent's instructions when it runs in its own git worktree. */
 export const worktreeDoc = (branch: string, repo: string) => `You work in your own git worktree on branch ${branch}, made from the current HEAD of ${repo}. Change files freely there; the main checkout is not affected. When you finish, whatever you changed is committed on ${branch} for the user to review, so you need not commit yourself (you may, if the task asks for separate commits). Do not push, merge or switch branches.`;
 export const SUBAGENT = `You are a subagent of OptChat, an AI agent that works for one user in a

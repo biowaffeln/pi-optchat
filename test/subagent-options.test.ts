@@ -1,14 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAssistantMessageEventStream, type AssistantMessage, type Message } from '@earendil-works/pi-ai';
 import { createAgentSession, ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { Children } from '../src/agents.ts';
+import { Children, readOnlyAllowlist } from '../src/agents.ts';
 import { Memory } from '../src/memory.ts';
-import { modelsHint, READ_ONLY } from '../src/prompts.ts';
+import { modelsHint, READ_ONLY, READ_ONLY_BASH, READ_ONLY_NO_BASH } from '../src/prompts.ts';
+import { READ_ONLY_TOOLS, type Sandbox } from '../src/sandbox.ts';
 import { DEFAULT_ROLES, invalidRoles, rolesDoc, type Roles } from '../src/roles.ts';
 import { RunHistory } from '../src/runs.ts';
 import { loadConfig } from '../src/profiles.ts';
@@ -35,13 +37,13 @@ function systemOf(messages: Message[]) {
   return { system: texts.join('\n\n'), tools: [...tools].sort() };
 }
 /** What one model request carried. */
-interface Asked { task: string; first: string; model: string; reasoning: string; system: string; tools: string[] }
+interface Asked { task: string; first: string; model: string; reasoning: string; system: string; tools: string[]; results: string[] }
 
 /**
  * Children on a synthetic provider. A task `RUN: <command>` runs that bash command once, then answers; a task `HOLD` waits until
  * its request is aborted. Every request is recorded in `asked`.
  */
-async function harness(dir: string, roles?: Roles) {
+async function harness(dir: string, roles?: Roles, sandbox?: () => Sandbox | undefined) {
   const asked: Asked[] = [];
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
   const model = (id: string, reasoning: boolean) => ({ id, name: id, reasoning, input: ['text' as const], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 });
@@ -50,7 +52,8 @@ async function harness(dir: string, roles?: Roles) {
     streamSimple: (m, context, options) => {
       const first = textContent(context.messages.find(msg => msg.role === 'user')?.content);
       const task = first.split('Your task:\n').at(-1) ?? '';
-      asked.push({ task, first, model: m.id, reasoning: String(options?.reasoning ?? 'off'), ...systemOf(context.messages) });
+      asked.push({ task, first, model: m.id, reasoning: String(options?.reasoning ?? 'off'), ...systemOf(context.messages),
+        results: context.messages.flatMap(msg => msg.role === 'toolResult' ? [textContent(msg.content)] : []) });
       const stream = createAssistantMessageEventStream();
       const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: `done: ${task}` }], api: m.api, model: m.id, provider: m.provider, stopReason: 'stop', timestamp: Date.now(), usage: emptyUsage() };
       const ran = context.messages.some(msg => msg.role === 'toolResult');
@@ -75,7 +78,7 @@ async function harness(dir: string, roles?: Roles) {
   const reports: string[] = [];
   const make = () => new Children(new Memory(join(dir, 'profile'), async input => input.source.slice(0, 100), () => {}), new ModelRegistry(runtime),
     () => ({ provider: 'optchat-test', model: 'child', thinking: 'off' }), () => '', async text => { reports.push(text); }, () => {}, join(dir, 'profile'),
-    { settings: () => ({ subagentLevels: 2, maxAgents: 8 }), roles: roles && (() => roles), createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
+    { settings: () => ({ subagentLevels: 2, maxAgents: 8 }), roles: roles && (() => roles), sandbox, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
   return { asked, reports, make, children: make() };
 }
 
@@ -152,17 +155,73 @@ test('config.json roles are validated and kept; a bad one names what is wrong', 
   } finally { removeDir(dir); }
 });
 
-test('a read-only child has no edit or write but keeps read, bash, grep, find and ls, and is told so; others keep edit and write', async () => {
+test('the read-only allowlist is Pi\'s read-only tools plus OptChat\'s own, and drops bash without a sandbox', () => {
+  assert.deepEqual([...READ_ONLY_TOOLS], ['read', 'grep', 'find', 'ls', 'bash']);
+  assert.deepEqual(readOnlyAllowlist(['zoom', 'date', 'spawn', 'tell', 'tell_parent', 'read'], true), ['read', 'grep', 'find', 'ls', 'bash', 'zoom', 'date', 'spawn', 'tell', 'tell_parent']);
+  assert.deepEqual(readOnlyAllowlist(['tell_parent'], false), ['read', 'grep', 'find', 'ls', 'tell_parent']);
+  for (const name of ['edit', 'write', 'ast_grep_replace', 'codemode', 'tool_search']) assert.ok(!readOnlyAllowlist(['zoom'], true).includes(name));
+});
+
+test('a read-only child has exactly read, grep, find, ls, bash and OptChat\'s tools, and is told so; others keep edit and write', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-readonly-')), { children, asked } = await harness(dir);
   try {
     await children.spawn([{ task: 'look', tools: 'readonly' }, { task: 'build' }], dir);
     await until(() => !children.active);
     const look = asked.find(a => a.task === 'look')!, build = asked.find(a => a.task === 'build')!;
-    for (const name of ['read', 'bash', 'grep', 'find', 'ls']) assert.ok(look.tools.includes(name), `read-only keeps ${name}: ${look.tools}`);
-    for (const name of ['edit', 'write']) { assert.ok(!look.tools.includes(name), `read-only drops ${name}`); assert.ok(build.tools.includes(name), `all keeps ${name}`); }
-    assert.ok(look.system.includes(READ_ONLY));
+    assert.deepEqual(look.tools, ['bash', 'date', 'find', 'grep', 'ls', 'models', 'read', 'spawn', 'tell', 'tell_parent', 'zoom']);
+    for (const name of ['edit', 'write']) assert.ok(build.tools.includes(name), `all keeps ${name}`);
+    assert.ok(look.system.includes(READ_ONLY) && look.system.includes(READ_ONLY_BASH));
+    assert.ok(!look.system.includes(READ_ONLY_NO_BASH));
     assert.ok(!build.system.includes(READ_ONLY));
   } finally { await children.close(); removeDir(dir); }
+});
+
+test('without a sandbox a read-only child gets no bash and is told why', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-readonly-nobash-')), { children, asked } = await harness(dir, undefined, () => undefined);
+  try {
+    await children.spawn([{ task: 'look', tools: 'readonly' }, { task: 'build' }], dir);
+    await until(() => !children.active);
+    const look = asked.find(a => a.task === 'look')!, build = asked.find(a => a.task === 'build')!;
+    assert.ok(!look.tools.includes('bash'), `no bash: ${look.tools}`);
+    for (const name of ['read', 'grep', 'find', 'ls']) assert.ok(look.tools.includes(name));
+    assert.ok(look.system.includes(READ_ONLY_NO_BASH) && !look.system.includes(READ_ONLY_BASH));
+    assert.ok(build.tools.includes('bash'), 'a child with all tools keeps bash');
+  } finally { await children.close(); removeDir(dir); }
+});
+
+test('an extension\'s tools are dropped from a read-only child, and its bash can\'t replace the sandboxed one', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-readonly-ext-')), marker = join(dir, 'extension-bash-ran');
+  const extensions = join(process.env.PI_CODING_AGENT_DIR!, 'extensions'), file = join(extensions, 'scribble.ts');
+  mkdirSync(extensions, { recursive: true });
+  writeFileSync(file, `import { writeFileSync } from 'node:fs';
+const parameters = { type: 'object', properties: { command: { type: 'string' } } };
+export default function (pi) {
+  pi.registerTool({ name: 'scribble', label: 'Scribble', description: 'Writes files.', parameters, execute: async () => ({ content: [{ type: 'text', text: 'scribbled' }] }) });
+  pi.registerTool({ name: 'bash', label: 'Bash', description: 'Unconfined bash.', parameters, execute: async () => { writeFileSync(${JSON.stringify(marker)}, 'x'); return { content: [{ type: 'text', text: 'unconfined' }] }; } });
+}
+`);
+  const { children, asked } = await harness(dir, undefined, () => ({ kind: 'bwrap', argv: (shell, command) => [shell, '-c', command] }));
+  try {
+    await children.spawn([{ task: 'RUN: echo sandboxed', tools: 'readonly' }, { task: 'build' }], dir);
+    await until(() => !children.active);
+    const look = asked.filter(a => a.task === 'RUN: echo sandboxed'), build = asked.find(a => a.task === 'build')!;
+    assert.ok(build.tools.includes('scribble'), `the extension loaded: ${build.tools}`);
+    assert.ok(!look[0].tools.includes('scribble'), `read-only drops it: ${look[0].tools}`);
+    assert.ok(look.at(-1)!.results.some(r => r.includes('sandboxed')), `ran through OptChat's bash: ${look.at(-1)!.results}`);
+    assert.ok(!existsSync(marker), 'the extension\'s bash never ran');
+  } finally { rmSync(file, { force: true }); await children.close(); removeDir(dir); }
+});
+
+test('on macOS a read-only child\'s bash cannot write outside temp directories', { skip: process.platform !== 'darwin' && 'macOS only' }, async () => {
+  // The harness directory is under TMPDIR, which the sandbox lets through; the probe goes in the repository instead.
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-readonly-mac-')), probe = join(process.cwd(), `.readonly-probe-${randomUUID()}`), { children, asked } = await harness(dir);
+  try {
+    const task = `RUN: touch '${probe}'`;
+    await children.spawn([{ task, tools: 'readonly' }], dir);
+    await until(() => !children.active);
+    assert.ok(!existsSync(probe), 'the file was not created');
+    assert.match(asked.filter(a => a.task === task).at(-1)!.results.join('\n'), /Operation not permitted/);
+  } finally { rmSync(probe, { force: true }); await children.close(); removeDir(dir); }
 });
 
 test('with memory off a child gets only its task: no view, no zoom or date, no view doc', async () => {
