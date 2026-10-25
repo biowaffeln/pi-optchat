@@ -6,12 +6,13 @@ import { tmpdir } from 'node:os';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionFactory, type ExtensionUIContext } from '@earendil-works/pi-coding-agent';
 import optchat from '../src/index.ts';
-import { createProfile, lastProfile, loadConfig, lockProfile, profilePath, rememberProfile, saveConfig } from '../src/profiles.ts';
+import { createProfile, lastProfile, loadConfig, profilePath, rememberProfile, saveConfig } from '../src/profiles.ts';
+import { lockPath, takeLock } from '../src/locks.ts';
 import { textContent } from '../src/transcript.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
 
-// Short paths: the profile lock socket has a ~103-byte limit on macOS. Windows uses a hashed named pipe, so any directory fits.
+// Short paths: lock sockets have a ~103-byte limit on macOS. Windows uses a hashed named pipe, so any directory fits.
 const root = mkdtempSync(process.platform === 'win32' ? join(tmpdir(), 'oc-headless-') : '/tmp/oc-headless-');
 const oldHome = process.env.OPTCHAT_HOME;
 process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
@@ -108,9 +109,10 @@ test('in an RPC host (Pi Web), /optchat profile <name> as the first message bind
 });
 
 test('in an RPC host, /optchat profile <name> that cannot open saves no binding and blocks prompts instead of running without memory', async () => {
-  const unlock = await lockProfile(profilePath('work'), 'work · PID 1 · elsewhere');
+  // An OptChat from before branches holds the profile's legacy lock, expecting to be its only writer.
+  const unlock = await takeLock(lockPath(profilePath('work'), 'lock'), () => 'work · PID 1 · elsewhere');
   try {
-    for (const [why, name, error] of [['typo', 'wrok', /does not exist/], ['busy', 'work', /Profile already running/]] as const) {
+    for (const [why, name, error] of [['typo', 'wrok', /does not exist/], ['older OptChat', 'work', /open in an older OptChat \(work · PID 1 · elsewhere\)/]] as const) {
       const pi = await headless('rpc');
       try {
         await pi.ask(`/optchat profile ${name}`);
@@ -134,12 +136,13 @@ test('the model gets the system prompt Pi has now, with sections extensions load
 });
 
 test('a requested profile that cannot open fails visibly and does not run without memory', async () => {
-  const unlock = await lockProfile(profilePath('work'), 'work · PID 1 · elsewhere');
+  const unlock = await takeLock(lockPath(profilePath('work'), 'lock'), () => 'work · PID 1 · elsewhere');
   try {
-    for (const [why, options] of [['typo', { flag: 'wrok' }], ['busy', { bound: 'work' }], ['deleted', { bound: 'gone' }]] as const) {
+    for (const [why, options] of [['typo', { flag: 'wrok' }], ['older OptChat', { bound: 'work' }], ['deleted', { bound: 'gone' }]] as const) {
       const pi = await headless('print', options);
       try {
         assert.equal(pi.errors.length, 1, `${why}: Pi reports the error (stderr in print mode)`);
+        if (why === 'older OptChat') assert.match(pi.errors[0], /Close that Pi first/);
         assert.equal(await pi.ask('Say OK'), undefined, `${why}: the prompt is not answered without memory`);
         assert.equal(pi.sent.length, 0);
       } finally { await pi.close(); }

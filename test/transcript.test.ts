@@ -12,6 +12,7 @@ import { asUser, buildContext, PREVIOUS_EXCHANGE, previousExchange, REPORT_TYPE,
 import { COMPACT } from '../src/prompts.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
+import { lastBranchDir, sessionLog } from './branches-support.ts';
 
 const user = (content: UserMessage['content']): UserMessage => ({ role: 'user', content, timestamp: 1 });
 const answer = (text: string, stopReason: AssistantMessage['stopReason'] = 'stop'): AssistantMessage => ({
@@ -213,8 +214,8 @@ test('real Pi lifecycle retains one exchange across tool calls and resume, witho
     active = await open(fresh);
     await active.prompt('Fresh session.');
     assert.equal(captured.at(-1)!.messages.length, 1, 'a new session must not replay another session\'s exchange');
-    const main = join(dir, 'profiles', 'fixture', 'main');
-    const log = readdirSync(main).flatMap(file => readFileSync(join(main, file), 'utf8').trim().split('\n'));
+    // The earlier sessions merged into the profile's log as they closed; the last is still open, with its messages in its branch.
+    const log = sessionLog(profilePath('fixture'));
     assert.equal(log.length, 23, 'only actual requests, replies, one failure, and tool activity should be logged');
     assert.deepEqual(errors, []);
   } finally {
@@ -284,13 +285,13 @@ test('another extension\'s shown custom message starts a turn and stays in memor
     assert.deepEqual(captured.at(-1)!.map(m => m.role), ['user', 'assistant', 'user']);
     assert.ok(textContent(captured.at(-1)![0].content).endsWith(tagged));
     assert.equal(textContent(captured.at(-1)![1].content), `Answer to: ${tagged}`);
-    const main = join(dir, 'profiles', 'fixture', 'main');
-    const log = readdirSync(main).flatMap(file => readFileSync(join(main, file), 'utf8').trim().split('\n').map(line => JSON.parse(line)));
+    // The session is still open, so its messages are in its branch.
+    const log = sessionLog(profilePath('fixture'));
     assert.ok(log.some(entry => entry.kind === 'user' && entry.text === tagged));
     planning = true;
     await session.prompt('Plan the change.');
     assert.ok(captured.at(-1)!.some(m => m.role === 'user' && textContent(m.content) === plan));
-    const after = readdirSync(main).flatMap(file => readFileSync(join(main, file), 'utf8').trim().split('\n').map(line => JSON.parse(line)));
+    const after = sessionLog(profilePath('fixture'));
     assert.ok(after.some(entry => entry.kind === 'user' && entry.text === 'Plan the change.'));
     assert.ok(!after.some(entry => entry.kind === 'user' && entry.text.includes('PLAN MODE')));
   } finally {
@@ -395,7 +396,8 @@ test('a /skill: command is logged once, as its expansion, and never recovered as
     const log = readdirSync(main).flatMap(file => readFileSync(join(main, file), 'utf8').trim().split('\n')).map(line => JSON.parse(line));
     assert.deepEqual(log.map(entry => entry.kind), ['user', 'talk']);
     assert.match(log[0].text, /^<skill name="demo"[\s\S]*Follow the demo steps\.[\s\S]*Do the task\.$/);
-    assert.deepEqual(JSON.parse(readFileSync(join(dir, 'profiles', 'fixture', 'pending-inputs.json'), 'utf8')), []);
+    // The input journal is the session's own, in its branch: nothing left there for a recovery to log again.
+    assert.deepEqual(JSON.parse(readFileSync(join(lastBranchDir(profilePath('fixture')), 'pending-inputs.json'), 'utf8')), []);
   } finally {
     if (session) { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); }
     if (oldHome === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = oldHome;
@@ -529,7 +531,8 @@ test('inputs with images are claimed too, including /skill: commands and Pi\'s i
     assert.match(log[0].text, /^<skill name="demo"[\s\S]*\ngo\n\[image [0-9a-f]{16}\]$/);
     assert.match(log[2].text, /^look at this\n\[image [0-9a-f]{16}\]$/);
     assert.deepEqual(readdirSync(join(dir, 'profiles', 'fixture', 'images')).map(file => readFileSync(join(dir, 'profiles', 'fixture', 'images', file)).toString('base64')), [PNG]);
-    assert.deepEqual(JSON.parse(readFileSync(join(dir, 'profiles', 'fixture', 'pending-inputs.json'), 'utf8')), []);
+    // The input journal is the session's own, in its branch: nothing left there for a recovery to log again.
+    assert.deepEqual(JSON.parse(readFileSync(join(lastBranchDir(profilePath('fixture')), 'pending-inputs.json'), 'utf8')), []);
   } finally {
     if (session) { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); }
     if (oldHome === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = oldHome;

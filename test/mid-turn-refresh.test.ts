@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
@@ -15,6 +15,7 @@ import { subagentCompaction } from '../src/agents.ts';
 import { COMPACT, TURN_REFRESHED } from '../src/prompts.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
+import { sessionLog } from './branches-support.ts';
 
 const reply = (content: AssistantMessage['content'], stopReason: AssistantMessage['stopReason']): AssistantMessage => ({
   role: 'assistant', content, timestamp: 2, stopReason, api: 'openai-completions', provider: 'fixture', model: 'fixture', usage: emptyUsage(),
@@ -106,8 +107,8 @@ test('a turn past its threshold is sent as the refreshed view, its task verbatim
     assert.ok(view.includes('|tool: zoom {"id":0,"n":1}') && view.includes('2+1|Summary.'), 'the moved steps are view lines');
     const ids = captured.map(c => c.messages.flatMap(m => m.role === 'assistant' ? m.content.flatMap(b => b.type === 'toolCall' ? [b.id] : []) : []).join(' '));
     assert.deepEqual([ids[4], ids[8]], ['zoom-4', 'zoom-8']);
-    const main = join(dir, 'profiles', 'fixture', 'main');
-    const kinds = readdirSync(main).flatMap(file => readFileSync(join(main, file), 'utf8').trim().split('\n')).map(line => (JSON.parse(line) as { kind: string }).kind);
+    // The session is still open, so its messages are in its branch, not yet merged into the profile's log.
+    const kinds = sessionLog(profilePath('fixture')).map(e => e.kind);
     assert.deepEqual(kinds, ['user', ...Array.from({ length: 8 }, () => ['tool', 'echo']).flat(), 'talk'], 'each step logged once');
     assert.deepEqual(errors, []);
   } finally {

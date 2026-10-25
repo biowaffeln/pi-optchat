@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createAssistantMessageEventStream, type AssistantMessage, type Context } from '@earendil-works/pi-ai';
@@ -13,6 +13,8 @@ import { REPORT_TYPE, textContent, withoutFullChat } from '../src/transcript.ts'
 import { COMPACT } from '../src/prompts.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
+import { readInfo, startBranch } from '../src/branch.ts';
+import { logIn, openBranchDir, sessionLog } from './branches-support.ts';
 
 initTheme('dark', false);
 const plain = (lines: string[]) => lines.join('\n').replace(/\x1b\[[0-9;:]*[A-Za-z]|\x1b[\]_][^\x07\x1b]*(\x07|\x1b\\)/g, '');
@@ -121,8 +123,8 @@ test('a report reaches an idle or busy main agent as a user message to the model
     const shown = manager.getBranch().filter(e => e.type === 'custom_message' && e.customType === REPORT_TYPE);
     assert.equal(shown.length, 2, 'both reports are stored as custom messages, so Pi draws them with our renderer');
     assert.ok(!manager.getBranch().some(e => e.type === 'message' && e.message.role === 'user' && textContent(e.message.content).startsWith('[8964a512]')));
-    const main = join(dir, 'profiles', 'fixture', 'main');
-    const log = readdirSync(main).flatMap(file => readFileSync(join(main, file), 'utf8').trim().split('\n')).map(line => JSON.parse(line) as { kind: string; text: string });
+    // Still open: the session's messages are in its branch until it closes.
+    const log = sessionLog(profilePath('fixture'));
     assert.ok(log.some(e => e.kind === 'work' && e.text === '[8964a512] Message from subagent (still running): step 1 done'));
     assert.ok(log.some(e => e.kind === 'work' && e.text === '[8964a512] Final report.'));
     assert.ok(log.some(e => e.kind === 'user' && e.text === 'Start a subagent.'), 'what the user typed stays user');
@@ -134,18 +136,22 @@ test('a report reaches an idle or busy main agent as a user message to the model
   }
 });
 
-test('reports a crash held back with unfinished siblings are delivered at the next start', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'optchat-held-'));
+/** A fixture profile and a Pi bound to it, opened once `crash` has left a dead session's files behind. The model answers "ok"
+ * and `asked` gets the last message of every main-agent call. */
+async function afterCrash(prefix: string, crash: (profile: string) => Promise<void>) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
   const oldHome = process.env.OPTCHAT_HOME;
   process.env.OPTCHAT_HOME = dir;
-  const asked: string[] = [];
-  let session: Awaited<ReturnType<typeof createAgentSession>>['session'] | undefined;
+  const asked: string[] = [], errors: string[] = [];
+  const restore = () => {
+    if (oldHome === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = oldHome;
+    removeDir(dir);
+  };
   try {
     createProfile('fixture');
     const profile = profilePath('fixture');
     saveConfig(profile, { ...loadConfig(profile), compactor: { provider: 'fixture', model: 'fixture', thinking: 'off' } });
-    // Pi died after one child of a two-child spawn finished: its report was journaled, held for its sibling.
-    writeFileSync(join(profile, 'pending-reports.json'), JSON.stringify([{ text: '[8964a512] a done', count: 1, batch: '8964a512' }]));
+    await crash(profile);
     const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
     runtime.registerProvider('fixture', {
       baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
@@ -164,22 +170,58 @@ test('reports a crash held back with unfinished siblings are delivered at the ne
     await loader.reload();
     const manager = SessionManager.create(dir, join(dir, 'sessions'));
     manager.appendCustomEntry('optchat.profile', { name: 'fixture' });
-    session = (await createAgentSession({ modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'),
-      resourceLoader: loader, settingsManager, sessionManager: manager, tools: ['zoom', 'date'] })).session;
-    const errors: string[] = [];
+    const { session } = await createAgentSession({ modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'),
+      resourceLoader: loader, settingsManager, sessionManager: manager, tools: ['zoom', 'date'] });
     await session.bindExtensions({ onError: error => errors.push(error.error) });
-    for (const deadline = Date.now() + 10000; !asked.some(t => t.endsWith('[8964a512] a done'));) {
-      if (Date.now() > deadline) throw new Error(`Held report not delivered: ${errors.join('; ')}`);
+    const close = async () => { try { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); } finally { restore(); } };
+    return { session, profile, asked, errors, close };
+  } catch (error) { restore(); throw error; }
+}
+// Pi died after one child of a two-child spawn finished: its report was journaled, held for its sibling.
+const HELD = [{ text: '[8964a512] a done', count: 1, batch: '8964a512' }];
+
+test('reports an older OptChat held back at a crash, with unfinished siblings, are delivered by the first session that opens', async () => {
+  // Before branches the journal sat in the profile itself; the first branch to open takes it over.
+  const pi = await afterCrash('optchat-held-', async profile => { writeFileSync(join(profile, 'pending-reports.json'), JSON.stringify(HELD)); });
+  try {
+    for (const deadline = Date.now() + 10000; !pi.asked.some(t => t.endsWith('[8964a512] a done'));) {
+      if (Date.now() > deadline) throw new Error(`Held report not delivered: ${pi.errors.join('; ')}`);
       await new Promise(r => setTimeout(r, 10));
     }
-    await session.agent.waitForIdle();
-    assert.deepEqual(JSON.parse(readFileSync(join(profile, 'pending-reports.json'), 'utf8')), [], 'logged to memory, it leaves the journal');
-    assert.deepEqual(errors, []);
-  } finally {
-    if (session) { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); }
-    if (oldHome === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = oldHome;
-    removeDir(dir);
-  }
+    await pi.session.agent.waitForIdle();
+    assert.ok(!existsSync(join(pi.profile, 'pending-reports.json')), 'the profile\'s own journal moved into the branch');
+    assert.deepEqual(JSON.parse(readFileSync(join(openBranchDir(pi.profile), 'pending-reports.json'), 'utf8')), [], 'logged to memory, it leaves the journal');
+    assert.ok(sessionLog(pi.profile).some(e => e.kind === 'work' && e.text === '[8964a512] a done'));
+    assert.deepEqual(pi.errors, []);
+  } finally { await pi.close(); }
+});
+
+test('reports a crashed session held back with unfinished siblings end up in the profile\'s memory as work, once, when the next session recovers it', async () => {
+  let crashed = '';
+  const pi = await afterCrash('optchat-held-', async profile => {
+    // A session that journaled the held report, then died: its branch never closed, and its live lock is gone.
+    const dead = await startBranch(profile, '/work/crashed', () => {});
+    writeFileSync(join(dead.dir, 'pending-reports.json'), JSON.stringify(HELD));
+    crashed = dead.dir;
+    await dead.release();
+  });
+  try {
+    await new Promise(r => setTimeout(r, 100)); // room for a wrong delivery
+    assert.equal(pi.asked.length, 0, 'the next session is another branch: it does not run the dead one\'s report as a turn');
+    const trunk = logIn(pi.profile);
+    assert.deepEqual(trunk.map(e => e.kind), ['work', 'note'], 'the report, then a note that its session ended without closing');
+    assert.equal(trunk[0].text, '[8964a512] a done');
+    assert.match(trunk[1].text, /ended without closing/);
+    assert.ok(readInfo(crashed)?.closed, 'the dead branch is closed once merged');
+    assert.deepEqual(JSON.parse(readFileSync(join(crashed, 'pending-reports.json'), 'utf8')), [], 'and its journal emptied, so nothing is recovered twice');
+    assert.notEqual(openBranchDir(pi.profile), crashed);
+    // The new session starts after the recovered messages, so the model sees the report in its view.
+    await pi.session.prompt('What happened?');
+    assert.equal(pi.asked.length, 1);
+    assert.ok(pi.asked[0].includes('[8964a512] a done') && pi.asked[0].endsWith('What happened?'));
+    assert.equal(sessionLog(pi.profile).filter(e => e.text === '[8964a512] a done').length, 1);
+    assert.deepEqual(pi.errors, []);
+  } finally { await pi.close(); }
 });
 
 test('a report steered into a running turn reaches the main agent once, even when Esc clears Pi\'s queue or an abort leaves it queued', async () => {
@@ -235,7 +277,7 @@ test('a report steered into a running turn reaches the main agent once, even whe
         pi.on('agent_settled', async () => {
           if (!settling) return;
           settling = false;
-          await until(() => readFileSync(join(profile, 'pending-reports.json'), 'utf8').includes('Child done.'), 'the child reports while settling');
+          await until(() => readFileSync(join(openBranchDir(profile), 'pending-reports.json'), 'utf8').includes('Child done.'), 'the child reports while settling');
         });
       }, optchat] });
     await loader.reload();
@@ -246,8 +288,8 @@ test('a report steered into a running turn reaches the main agent once, even whe
     const errors: string[] = [];
     await session.bindExtensions({ onError: error => errors.push(error.error) });
     const s = session;
-    const work = () => readdirSync(join(profile, 'main')).flatMap(file => readFileSync(join(profile, 'main', file), 'utf8').trim().split('\n'))
-      .map(line => JSON.parse(line) as { kind: string; text: string }).filter(e => e.kind === 'work' && e.text.includes('Child done.'));
+    // The session stays open throughout, so what it logs is in its branch.
+    const work = () => sessionLog(profile).filter(e => e.kind === 'work' && e.text.includes('Child done.'));
     const reportTurn = async (stop: 'esc' | 'abort' | 'none') => {
       const before = work().length, running = s.prompt('Spawn one.');
       await until(() => s.agent.hasQueuedMessages(), 'the report is queued as a steer');
@@ -262,7 +304,7 @@ test('a report steered into a running turn reaches the main agent once, even whe
     await reportTurn('esc');
     assert.equal(work().length, 1, 'the cleared report is sent again after the turn, once');
     assert.equal(main.filter(t => t.endsWith('Child done.')).length, 1, 'the model sees it in one turn');
-    assert.deepEqual(JSON.parse(readFileSync(join(profile, 'pending-reports.json'), 'utf8')), []);
+    assert.deepEqual(JSON.parse(readFileSync(join(openBranchDir(profile), 'pending-reports.json'), 'utf8')), []);
 
     main.length = 0;
     await reportTurn('abort');
