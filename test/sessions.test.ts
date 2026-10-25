@@ -46,10 +46,15 @@ async function session(name: string, cwd = root) {
       const last = context.messages.at(-1), prompt = textContent(last && 'content' in last ? last.content : '');
       if (!compaction) sent.push(context.messages.map(m => 'content' in m ? textContent(m.content) : '').join('\n'));
       const asked = prompt.includes('</chat>') ? prompt.slice(prompt.lastIndexOf('</chat>') + 7).trim() : prompt;
-      const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: compaction ? 'a summary line' : `OK to: ${asked}` }],
-        api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: 'stop', usage: emptyUsage() };
+      // "call <tool> <json>; <tool> <json>" makes the model call those tools, then answer with their results.
+      const calls = !compaction && /^call /.test(asked) && context.messages.at(-1)?.role === 'user'
+        ? asked.slice(5).split('; ').map((c, k) => ({ type: 'toolCall' as const, id: `call-${k}`, name: c.slice(0, c.indexOf(' ')), arguments: JSON.parse(c.slice(c.indexOf(' ') + 1)) as Record<string, unknown> })) : [];
+      const results = context.messages.flatMap(m => m.role === 'toolResult' ? [textContent(m.content)] : []);
+      const text = compaction ? 'a summary line' : results.length ? `Results: ${results.join(' | ')}` : `OK to: ${asked}`;
+      const message: AssistantMessage = { role: 'assistant', content: calls.length ? calls : [{ type: 'text', text }], stopReason: calls.length ? 'toolUse' : 'stop',
+        api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), usage: emptyUsage() };
       const stream = createAssistantMessageEventStream();
-      queueMicrotask(() => { stream.push({ type: 'start', partial: message }); stream.push({ type: 'done', reason: 'stop', message }); stream.end(); });
+      queueMicrotask(() => { stream.push({ type: 'start', partial: message }); stream.push({ type: 'done', reason: calls.length ? 'toolUse' : 'stop', message }); stream.end(); });
       return stream;
     },
   });
@@ -58,7 +63,7 @@ async function session(name: string, cwd = root) {
     noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, extensionFactories: [optchat] });
   await loader.reload();
   const { session } = await createAgentSession({ cwd, modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'), resourceLoader: loader, settingsManager,
-    sessionManager: SessionManager.create(cwd, join(dir, 'sessions')), tools: [] });
+    sessionManager: SessionManager.create(cwd, join(dir, 'sessions')), tools: ['peers', 'ask_peer', 'note_peer'] });
   session.extensionRunner.setFlagValue('optchat-profile', name);
   const uiContext: ExtensionUIContext = { ...session.extensionRunner.getUIContext(), notify: (message, type) => { (type === 'error' ? errors : notes).push(message); } };
   await session.bindExtensions({ uiContext, mode: 'print', onError: error => { errors.push(error.error); } });
@@ -73,7 +78,9 @@ async function session(name: string, cwd = root) {
   open.push(close);
   /** The view the model got with the last prompt. */
   const view = () => { const last = sent.at(-1) ?? ''; return last.slice(0, last.indexOf('</chat>')); };
-  return { ask, close, sent, view, errors, notes };
+  /** The id of this session's branch, from the footer. */
+  const id = () => /branch ([0-9a-f]{6})/.exec(notes.join('\n'))?.[1] ?? '';
+  return { ask, close, sent, view, errors, notes, id };
 }
 /** Every session's close, so a failed test still lets go of its locks and timers. */
 const open: (() => Promise<void>)[] = [];
@@ -159,5 +166,29 @@ test('a session whose view batch-merges after another session merged starts agai
     const all = trunkTexts(name);
     assert.equal(all.filter(t => t === 'alpha after the rebase').length, 1, 'and its later ones once, after it closed');
     assert.deepEqual(a.errors, []);
+  } finally { await a.close(); await b.close(); }
+});
+
+test('peers lists the other open sessions; a note reaches the end of the peer\'s next input, once, and only one per turn', async () => {
+  const name = profile();
+  const a = await session(name, '/tmp'), b = await session(name, root);
+  try {
+    await b.ask('beta: renaming /auth/refresh to /session/refresh');
+    const listed = await a.ask('call peers {}');
+    assert.match(listed ?? '', new RegExp(`${b.id()} · ${root} · started .* · idle\\n  \\d+\\+1\\|`));
+    assert.match(listed ?? '', /renaming \/auth\/refresh/, 'with its latest lines');
+    assert.doesNotMatch(listed ?? '', new RegExp(a.id()), 'not itself');
+    const sent = await a.ask(`call note_peer {"id":"${b.id()}","text":"I'm changing the auth client too, ping me before you merge"}; note_peer {"id":"${b.id()}","text":"second"}`);
+    assert.match(sent ?? '', /Noted\. .* \| .*already left .* a note this turn/);
+    assert.equal(b.sent.length, 1, 'the note started nothing in b');
+    await b.ask('next step');
+    assert.match(b.sent.at(-1)!, new RegExp(`next step\\n\\n\\[note from ${a.id()} \\(/tmp\\)\\] I'm changing the auth client too, ping me before you merge$`));
+    await b.ask('and another');
+    assert.ok(b.sent.at(-1)!.endsWith('\nand another'), 'a note arrives once (the previous exchange still shows it)');
+    assert.match(b.view(), /note from/, 'and stays in b\'s memory with the input it came with');
+    assert.match(await a.ask(`call note_peer {"id":"${a.id()}","text":"hi"}`) ?? '', /is this session/);
+    assert.match(await a.ask('call note_peer {"id":"abcdef","text":"hi"}') ?? '', /not open/);
+    assert.match(await a.ask(`call note_peer {"id":"${b.id()}","text":"${'x'.repeat(281)}"}`) ?? '', /281 bytes; notes are at most 280/);
+    for (const s of [a, b]) assert.deepEqual(s.errors, []);
   } finally { await a.close(); await b.close(); }
 });

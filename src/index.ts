@@ -9,12 +9,13 @@ import { Memory, type Compressor } from './memory.ts';
 import { atomicWrite } from './store.ts';
 import { createCompressor, type ModelChoice } from './compactor.ts';
 import { createProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, profilePath, rememberProfile, saveConfig, type ProfileConfig } from './profiles.ts';
-import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, MASTER, modelsHint, SEARCH_DOC, TURN_REFRESHED, VIEW_DOC } from './prompts.ts';
+import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, MASTER, modelsHint, PEERS_DOC, SEARCH_DOC, TURN_REFRESHED, VIEW_DOC } from './prompts.ts';
 import { cachePayload, record } from './cache.ts';
 import { saveImages } from './images.ts';
 import { asUser, boundedMessage, atWork, buildContext, logMessage, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, textContent, typedText } from './transcript.ts';
 import { registerReportRenderer, type ReportDetails } from './report-message.ts';
 import { memoryTools, result, searchTool } from './tools.ts';
+import { askPeer, lastLines, livePeers, notePeer, notesText, peersText, publishView, takeNotes } from './peers.ts';
 import { Children, loadedBuiltins, modelsTool, refreshContextFiles, TASKS } from './agents.ts';
 import { isActiveRun, type RunInfo } from './runs.ts';
 import { exportBrowser } from './browser.ts';
@@ -67,6 +68,8 @@ export default function optchat(pi: ExtensionAPI) {
   let view: string | undefined;
   let prompt = '';
   let runStarted = false;
+  /** The peers this run left a note: one each per turn, so a note can't turn into a chat. */
+  let noted = new Set<string>();
   let fault: string | undefined;
   /** Reports not yet in memory. `count`: how many subagent reports the text joins. `batch`: held while the rest of that spawn runs, not sent yet.
    * `steered`: last sent into a running turn, where Esc or a dequeue can clear it from Pi's queue unseen. */
@@ -317,7 +320,8 @@ export default function optchat(pi: ExtensionAPI) {
       rememberProfile(name);
       const branch: Branch = { ...started, merged: memory.root.length, seen: memory.batches, length: memory.root.length, changed: Date.now() };
       active = { name, dir, config, memory, inbox, children, usage, branch, compress }; fault = undefined; idle = () => ctx.isIdle();
-      started.setStatus({ cwd: ctx.cwd, pid: process.pid, created: started.info.created });
+      share(ctx);
+      try { publishView(started.dir, memory.render()); } catch { /* published again after each turn */ }
       await restoreMain(ctx, active);
       mountNav(ctx);
       watchIdle(ctx);
@@ -399,20 +403,33 @@ export default function optchat(pi: ExtensionAPI) {
     }
     if (importing || pendingImport(active.dir)) { ctx.ui.notify('This profile has an import in progress. Use /optchat import to resume or discard it, or switch profiles.', 'info'); return { action: 'handled' }; }
     if (event.source !== 'extension') {
-      try { active.inbox.record(event.text, event.streamingBehavior !== undefined); }
-      catch (error) { ctx.ui.notify(`Could not save input: ${errorText(error)}`, 'error'); return { action: 'handled' }; }
+      // Notes other sessions left go at the end of the next thing the user sends, so they never start a turn of their own.
+      let text = event.text;
+      try {
+        const notes = takeNotes(active.branch.dir);
+        if (notes.length) text = `${text}\n\n${notesText(notes)}`;
+        active.inbox.record(text, event.streamingBehavior !== undefined);
+      } catch (error) { ctx.ui.notify(`Could not save input: ${errorText(error)}`, 'error'); return { action: 'handled' }; }
+      if (text !== event.text) return { action: 'transform', text, images: event.images };
     }
     return { action: 'continue' };
   });
+  /** What this session's lock tells peers: where it runs, whether it works, and its latest lines. */
+  const share = (ctx: ExtensionContext) => {
+    const a = active;
+    if (!a) return;
+    try { a.branch.setStatus({ cwd: ctx.cwd, pid: process.pid, created: a.branch.info.created, working, lines: lastLines(a.memory.render()) }); }
+    catch { /* a status is a courtesy */ }
+  };
   const startRun = (ctx: ExtensionContext) => {
-    flush(); run = []; logged = 0; keep = 0; view = undefined; runStarted = true;
+    flush(); run = []; logged = 0; keep = 0; view = undefined; runStarted = true; noted = new Set();
     const config = active?.config;
     previous = config?.previousExchange ? previousExchange(ctx.sessionManager.getBranch(), config.previousExchangeKB * 1000) : [];
     pi.appendEntry(RUN_BOUNDARY, { state: 'start' });
   };
   // A report sent while Pi is idle starts its run without before_agent_start; it reuses the last built prompt.
   pi.on('agent_start', (_event, ctx) => {
-    working = true; showTitle(ctx);
+    working = true; showTitle(ctx); share(ctx);
     if (active && !runStarted) startRun(ctx);
   });
   pi.on('before_agent_start', (event, ctx) => {
@@ -421,7 +438,7 @@ export default function optchat(pi: ExtensionAPI) {
     const a = required();
     // Pi's own prompt sections (AGENTS.md files, skills, cwd) stay; the profile's instructions go last.
     syncSearch(a.config);
-    event.systemPromptOptions.customPrompt = allowSearch(`${MASTER}\n\n${modelsHint(a.config.subagent)}\n\n${VIEW_DOC}${a.config.previousExchange ? CONTINUITY : ''}${a.config.memorySearch ? SEARCH_DOC : ''}`, a.config.memorySearch);
+    event.systemPromptOptions.customPrompt = allowSearch(`${MASTER}\n\n${modelsHint(a.config.subagent)}\n\n${PEERS_DOC}\n\n${VIEW_DOC}${a.config.previousExchange ? CONTINUITY : ''}${a.config.memorySearch ? SEARCH_DOC : ''}`, a.config.memorySearch);
     event.systemPromptOptions.sections.instructions = `${instructions(a.dir)}\n\n${IMPORT_GUIDANCE}`;
     refreshContextFiles(event.systemPromptOptions);
     prompt = event.systemPrompt;
@@ -528,6 +545,8 @@ export default function optchat(pi: ExtensionAPI) {
     if (runStarted) pi.appendEntry(RUN_BOUNDARY, { state: 'end' });
     runStarted = false; status(ctx);
     working = false; showTitle(ctx);
+    if (active) try { publishView(active.branch.dir, active.memory.render()); } catch { /* peers see the last one */ }
+    share(ctx);
     if (active) {
       const dir = active.dir;
       // Sessions on the same profile take turns; one that finds another committing skips this checkpoint, and the next one covers it.
@@ -559,6 +578,31 @@ export default function optchat(pi: ExtensionAPI) {
     },
   });
   pi.registerTool(modelsTool(() => required().children));
+  pi.registerTool({ name: 'peers', label: 'Other sessions', description: 'List the other Pi sessions open on this profile right now: id, working directory, whether they are working, and their latest memory lines.',
+    parameters: Type.Object({}),
+    async execute() { const a = required(); return result(peersText(await livePeers(a.dir, a.branch.info.id))); },
+  });
+  pi.registerTool({ name: 'ask_peer', label: 'Ask another session', description: 'Ask a question about another open session (an id from peers). A cheap model answers from that session\'s memory view only; the session itself is not interrupted and never sees the question.',
+    parameters: Type.Object({ id: Type.String(), question: Type.String() }),
+    async execute(_id, args, signal, _update, ctx) {
+      const a = required();
+      const answer = await askPeer(a.dir, a.branch.info.id, args.id, args.question, ctx.modelRegistry, a.config.compactor,
+        message => { a.usage.compression(message, 'compactor', ctx.sessionManager.getSessionId()); }, signal);
+      return result(answer);
+    },
+  });
+  pi.registerTool({ name: 'note_peer', label: 'Note to another session', description: 'Leave a short note (at most 280 bytes) for another open session (an id from peers). It is added to the end of that session\'s next input; it never starts a turn there and gets no reply. One note per session per turn.',
+    parameters: Type.Object({ id: Type.String(), text: Type.String() }),
+    async execute(_id, args, _signal, _update, ctx) {
+      const a = required();
+      if (noted.has(args.id)) throw new Error(`You already left ${args.id} a note this turn. Put everything in one note.`);
+      // Taken before the write: tool calls in one message run at once, and the second must already see the first.
+      const turn = noted; turn.add(args.id);
+      try { await notePeer(a.dir, { id: a.branch.info.id, cwd: ctx.cwd }, args.id, args.text); }
+      catch (error) { turn.delete(args.id); throw error; }
+      return result(`Noted. ${args.id} sees it at the end of its next input.`);
+    },
+  });
   pi.registerTool({ name: 'tell', label: 'Tell background agent', description: 'Send a message to a subagent. A running one gets it at its next tool boundary. A finished one you started is resumed with its earlier conversation, and its new report arrives automatically.',
     parameters: Type.Object({ id: Type.String(), message: Type.String() }),
     async execute(_id, args) { return result(await required().children.tell(args.id, args.message)); },

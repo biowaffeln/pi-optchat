@@ -99,6 +99,18 @@ is running. The same goes for anything slow, such as CI or a deploy: don't sit
 polling it yourself at the end of a task, start a subagent to watch it, and
 move on. A message starting "[OptChat status]" is OptChat's own note on which
 subagents are running, not the user.`;
+/** How the other sessions on the profile show up, and the three tools that reach them. */
+export const PEERS_DOC = `Other Pi sessions can be open on this profile at the same time, each its own
+chat that merges into this shared memory when it closes or sits idle; a line
+"Another session's messages follow..." starts the block one merged. peers()
+lists the ones open now, with their working directory and latest lines;
+ask_peer(id, question) asks a cheap model about one, from its view; note_peer
+(id, text) leaves one a short note (at most 280 bytes) that it sees at the end
+of its next input. Use them when another session's work matters to yours (the
+same repository, a decision it made), not to chat. A line
+"[note from <id> (<cwd>)] ..." at the end of an input is such a note from
+another session, not the user's words; there is no reply to it unless it asks
+for one.`;
 export const VIEW_DOC = `The view: the whole chat between OptChat and the user, oldest first, inside
 <chat> tags, as one-line summaries. Each line is
 
