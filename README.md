@@ -72,6 +72,18 @@ The footer shows the active profile and this session's branch. Memory follows th
 | `/optchat instructions` | Edit this profile's `AGENTS.md`. |
 | `/optchat browse` | Open a readable snapshot of memory: the shape of what the model sees, summaries you can open down to the original messages, and search that shows where each message is folded. Run again to refresh. |
 | `/optchat import` | Import history, or resume/discard a paused import. |
+| `/undo` (or `/optchat undo`) | Take back your last message and the reply to it. See [Undo](#undo). |
+
+### Undo
+
+Sent a message with a typo? Press Esc to stop the reply, then run `/undo`. It removes your last message and everything logged after it (the partial reply, tool calls and their results) from this session's memory, so the next turn doesn't see it, and puts the message back in the editor so you can fix it and send it again. If you've already typed something in the editor, it leaves that alone and shows the old message in a notice instead. Attached images aren't restored.
+
+- It only works once the reply has stopped. It never runs on its own when you press Esc.
+- Each `/undo` takes back one message. Running it again takes back the one before, as long as that one is still only in this session.
+- It refuses once the message is in the profile's shared memory (after an idle merge, a catch-up with other sessions, or a restart), or once the view has folded it into a summary line. Shared memory is never rewritten.
+- If the reply ran tools, the log is cleaned but their effects aren't: edited files and commands that ran stay as they are. The notice names the tools.
+- Notes from other sessions and subagent reports that arrived after the message are kept.
+- Pi's own session history (what `/tree` shows) still has the exchange; OptChat just ignores it from then on.
 
 ## Models
 

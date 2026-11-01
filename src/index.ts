@@ -33,6 +33,7 @@ import { inspectorShortcut, mountNavigation } from './navigation.ts';
 import { mainTitle, TabTitle } from './title.ts';
 import { showModelPicker, showSettings } from './settings-page.ts';
 import { showMenu } from './menu.ts';
+import { cutBranch, planUndo } from './undo.ts';
 
 const binding = 'optchat.profile';
 const toggle = (prompt: string, line: string, on: boolean, after: string) => on === prompt.includes(line) ? prompt : on ? prompt.replace(after, after + line) : prompt.replace(line, '');
@@ -85,6 +86,8 @@ export default function optchat(pi: ExtensionAPI) {
   let checkpoints = Promise.resolve();
   let importing = false;
   let stopping = false;
+  /** Set while /undo cuts the log, so an idle merge can't take the messages it is removing. */
+  let undoing = false;
   let importController: AbortController | undefined;
   let importTask: Promise<void> | undefined;
   let unmountNavigation: (() => void) | undefined;
@@ -258,7 +261,7 @@ export default function optchat(pi: ExtensionAPI) {
     if (!a) return;
     idleTimer = setInterval(() => {
       const wait = idleMs(a.config), { branch, memory } = a;
-      if (active !== a || !wait || stopping || importing) return;
+      if (active !== a || !wait || stopping || importing || undoing) return;
       if (memory.root.length !== branch.length) { branch.length = memory.root.length; branch.changed = Date.now(); return; }
       if (runStarted || !idle() || memory.root.length <= branch.merged || Date.now() - branch.changed < wait) return;
       void merge(a, 'idle', warning => ctx.ui.notify(warning, 'warning'))
@@ -748,6 +751,7 @@ export default function optchat(pi: ExtensionAPI) {
       if (ctx.mode !== 'tui') throw new Error('/optchat settings requires interactive Pi. Edit config.json in the profile directory instead.');
       return showSettings(ctx, settingsOptions(ctx, a));
     }
+    if (action === 'undo') return undo(ctx);
     if (action === 'model') return pickModel(ctx, 'compactor');
     if (action === 'agents model') return pickModel(ctx, 'subagent');
     if (action === 'agents' || action === 'usage' || action === 'activity') return inspect(ctx, action);
@@ -763,10 +767,57 @@ export default function optchat(pi: ExtensionAPI) {
       if (ctx.hasUI) execFile(isWindows ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open', [file], error => { if (error && (!isWindows || error.code === 'ENOENT')) ctx.ui.notify(`Open ${file}`, 'info'); });
       ctx.ui.notify(file, 'info'); return;
     }
-    if (action) throw new Error('Use /optchat [profile|settings|model|agents|usage|activity|instructions|browse|import].');
+    if (action) throw new Error('Use /optchat [profile|settings|model|agents|usage|activity|instructions|browse|import|undo].');
   };
+  /** Takes back the user's last message and the reply to it (src/undo.ts), and puts the message back in the editor. */
+  const undo = async (ctx: ExtensionCommandContext) => {
+    const a = required();
+    if (importing || pendingImport(a.dir)) throw new Error('/undo is unavailable while an import is open.');
+    if (!ctx.isIdle() || runStarted) throw new Error('/undo works once the reply has stopped. Press Esc to stop it, then run /undo again.');
+    if (undoing) return;
+    undoing = true;
+    try {
+      // A merge already running decides what is shared; what it took stays.
+      await merging.catch(() => {});
+      flush();
+      const plan = planUndo(a.memory, Math.max(a.branch.merged, a.branch.info.base));
+      if (typeof plan === 'string') throw new Error(plan);
+      const old = a.memory;
+      await old.close();
+      let memory: Memory;
+      try {
+        cutBranch(a.branch.dir, plan.at);
+      } finally {
+        // Opened again even when the cut failed halfway, so the session keeps a memory to log into.
+        try { memory = await openBranchMemory(a.dir, a.branch.dir, a.branch.info, a.compress, warning => ctx.ui.notify(warning, 'error'), undefined, a.config.jobs); }
+        catch (error) { fault = `OptChat could not reopen its memory after /undo: ${errorText(error)}. Restart Pi.`; throw new Error(fault); }
+        a.memory = memory; a.children.memory = memory;
+      }
+      for (const e of plan.keep) memory.append(e.kind, e.text, e.date, e.receipt, e.origin);
+      Object.assign(a.branch, { seen: memory.batches, length: memory.root.length, changed: Date.now() });
+      run = []; logged = 0; keep = 0; view = undefined; previous = [];
+      // The previous-exchange replay reads Pi's own session, which still has the exchange: this marks it as taken back.
+      pi.appendEntry(RUN_BOUNDARY, { state: 'undo', since: Date.parse(plan.date) });
+      mountNav(ctx); status(ctx); share(ctx);
+      try { publishView(a.branch.dir, memory.render()); } catch { /* published again after the next turn */ }
+      const typedBack = typedFor(ctx, plan.date) ?? plan.text;
+      const editor = ctx.hasUI && ctx.mode === 'tui' && !ctx.ui.getEditorText().trim();
+      if (editor) ctx.ui.setEditorText(typedBack);
+      const tools = plan.tools.length ? `\nIt ran ${plan.tools.join(', ')}: the log is cleaned, but what those tools changed (files, commands) was not undone.` : '';
+      ctx.ui.notify(`OptChat took back your last message (${plan.removed} line${plan.removed === 1 ? '' : 's'} of the log).${editor ? ' It is back in the editor.' : `\nYou wrote:\n${typedBack}`}${tools}`, tools ? 'warning' : 'info');
+    } finally { undoing = false; }
+  };
+  /** What the user typed for the message logged at `date`, from Pi's session, without Pi's image notes; images can't go back. */
+  const typedFor = (ctx: ExtensionContext, date: string) => {
+    const at = Date.parse(date);
+    const entry = ctx.sessionManager.getBranch().findLast(e => e.type === 'message' && e.message.role === 'user' && e.message.timestamp === at);
+    return entry?.type === 'message' && entry.message.role === 'user' ? typedText(entry.message.content).bare : undefined;
+  };
+  pi.registerCommand('undo', { description: 'Take back your last message and the reply to it (only while it is not yet in the shared memory)',
+    handler: async (_args, ctx) => { try { await undo(ctx); } catch (error) { ctx.ui.notify(errorText(error), 'error'); } },
+  });
   pi.registerCommand('optchat', { description: 'OptChat profiles, settings, models, agents, instructions, memory browser, and imports',
-    getArgumentCompletions: prefix => ['profile', 'settings', 'model', 'agents', 'agents model', 'usage', 'activity', 'instructions', 'browse', 'import'].filter(s => s.startsWith(prefix)).map(value => ({ value, label: value })),
+    getArgumentCompletions: prefix => ['profile', 'settings', 'model', 'agents', 'agents model', 'usage', 'activity', 'instructions', 'browse', 'import', 'undo'].filter(s => s.startsWith(prefix)).map(value => ({ value, label: value })),
     handler: async (args, ctx) => { try { await command(args, ctx); } catch (error) { ctx.ui.notify(errorText(error), 'error'); } },
   });
 }

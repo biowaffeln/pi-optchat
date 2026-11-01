@@ -100,16 +100,20 @@ export function previousExchange(branch: readonly SessionEntry[], limit = PREVIO
 function latestExchange(branch: readonly SessionEntry[]) {
   let end = -1;
   let legacyEnd = branch.length;
+  // /undo leaves a marker with the time of the message it took back: runs from then on are no longer part of the chat.
+  let undone = Infinity;
+  const live = (exchange: readonly AgentMessage[]) => exchange.every(message => message.timestamp < undone);
   const messages = (entries: readonly SessionEntry[]) => entries.flatMap(entry => entry.type === 'message' ? [asUser(entry.message)] : entry.type === 'custom_message' ? [asUser({ role: 'custom', customType: entry.customType, content: entry.content, display: entry.display, timestamp: Date.parse(entry.timestamp) })] : []);
   for (let i = branch.length - 1; i >= 0; i--) {
     const entry = branch[i];
     if (entry.type !== 'custom' || entry.customType !== RUN_BOUNDARY || !record(entry.data)) continue;
+    if (entry.data.state === 'undo') { if (typeof entry.data.since === 'number') undone = Math.min(undone, entry.data.since); continue; }
     legacyEnd = i;
     if (entry.data.state === 'end') end = i;
     else if (entry.data.state === 'start') {
       if (end >= 0) {
         const exchange = completedExchange(messages(branch.slice(i + 1, end)));
-        if (exchange.length) return exchange;
+        if (exchange.length && live(exchange)) return exchange;
       }
       end = -1;
     }
