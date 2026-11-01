@@ -100,7 +100,9 @@ export function previousExchange(branch: readonly SessionEntry[], limit = PREVIO
 function latestExchange(branch: readonly SessionEntry[]) {
   let end = -1;
   let legacyEnd = branch.length;
-  // /undo leaves a marker with the time of the message it took back: runs from then on are no longer part of the chat.
+  // /undo leaves a marker with the time of the message it took back: runs from then on are no longer part of the chat. A run
+  // that holds any message from then on is skipped whole, so an earlier message of that same run (one /undo didn't take back,
+  // such as a steer sent before it) isn't replayed either; it is still in the memory view.
   let undone = Infinity;
   const live = (exchange: readonly AgentMessage[]) => exchange.every(message => message.timestamp < undone);
   const messages = (entries: readonly SessionEntry[]) => entries.flatMap(entry => entry.type === 'message' ? [asUser(entry.message)] : entry.type === 'custom_message' ? [asUser({ role: 'custom', customType: entry.customType, content: entry.content, display: entry.display, timestamp: Date.parse(entry.timestamp) })] : []);

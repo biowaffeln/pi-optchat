@@ -1,14 +1,18 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { record } from './cache.ts';
-import { end, isEntry, type Entry, type Memory, type Part } from './memory.ts';
-import { atomicWrite } from './store.ts';
+import { bytes, end, isEntry, type Entry, type Memory, type Part } from './memory.ts';
+import { atomicWrite, FileStore } from './store.ts';
 
 // /undo takes back the user's last message in this session, with everything logged after it (the reply, tool calls and their
 // results), so the next turn's context no longer has it. It only works on the session's own log, and only on what the trunk
 // doesn't have yet: a message that was merged into the profile's shared memory, or folded into a summary line of the view,
 // stays. Notes from other sessions and subagent reports logged after the message are kept, since nothing would deliver them
 // again; they go back in after the cut.
+//
+// The cut is a few file rewrites, so it is written down first as an intent (`undo.json`: where to cut, and the lines to put
+// back). Finishing it cuts again and appends those lines again, so it can be repeated: a branch whose Pi died halfway is
+// finished the next time its log loads, whether by this session or by the one that recovers it.
 
 /** Tools that only read memory or the profile, so taking back their calls leaves nothing behind. */
 const HARMLESS = new Set(['zoom', 'date', 'search', 'peers', 'ask_peer', 'models']);
@@ -50,7 +54,8 @@ export function planUndo(memory: Memory, from: number): UndoPlan | string {
 /** Rewrites each JSONL file in `folder` without the records `drop` picks. A line that doesn't parse stays as it is. */
 function rewrite(folder: string, drop: (value: unknown) => boolean) {
   if (!existsSync(folder)) return;
-  for (const name of readdirSync(folder).filter(n => n.endsWith('.jsonl'))) {
+  // Newest day first: the lines a cut drops are usually all in today's file. A cut stopped halfway is finished from undo.json.
+  for (const name of readdirSync(folder).filter(n => n.endsWith('.jsonl')).sort().reverse()) {
     const file = join(folder, name), lines = readFileSync(file, 'utf8').split('\n').filter(line => line.trim());
     const left = lines.filter(line => { try { return !drop(JSON.parse(line)); } catch { return true; } });
     if (left.length !== lines.length) atomicWrite(file, left.map(line => line + '\n').join(''));
@@ -85,4 +90,32 @@ export function cutBranch(dir: string, at: number) {
     if (saved !== undefined) atomicWrite(file, JSON.stringify(prefix(saved, at)));
   }
   rewrite(join(dir, 'main'), value => isEntry(value) && value.i >= at);
+}
+
+const INTENT = 'undo.json';
+interface Intent { at: number; keep: Entry[] }
+
+/** Writes down a cut before any of it happens, so a crash can't lose the lines it puts back. */
+export function writeUndo(dir: string, plan: Pick<UndoPlan, 'at' | 'keep'>) {
+  atomicWrite(join(dir, INTENT), JSON.stringify({ at: plan.at, keep: plan.keep } satisfies Intent));
+}
+/** Finishes a cut written down in the branch folder, if there is one: cuts the log there, appends the kept lines after it,
+ * and removes the intent. Safe to run again after a crash at any point. Returns whether there was one. Call it with no memory
+ * open on the folder. */
+export function finishUndo(dir: string, warn: (text: string) => void = console.error) {
+  const file = join(dir, INTENT);
+  if (!existsSync(file)) return false;
+  const value: unknown = JSON.parse(readFileSync(file, 'utf8'));
+  if (!record(value) || !Number.isSafeInteger(value.at) || !Array.isArray(value.keep) || !value.keep.every(isEntry))
+    throw new Error(`${file} is damaged; refusing to open this session's memory until it is fixed or removed.`);
+  const at = Number(value.at);
+  cutBranch(dir, at);
+  const store = new FileStore(dir, warn);
+  store.load();
+  value.keep.forEach((entry, k) => {
+    const { kind, text, date, receipt, origin } = entry;
+    store.append({ i: at + k, kind, text, date, size: bytes(`${kind}: ${text}`), ...receipt ? { receipt } : {}, ...origin ? { origin } : {} });
+  });
+  rmSync(file);
+  return true;
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
@@ -10,9 +10,12 @@ import { Memory } from '../src/memory.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
 import { textContent } from '../src/transcript.ts';
 import { COMPACT } from '../src/prompts.ts';
-import { planUndo } from '../src/undo.ts';
+import { cutBranch, planUndo, writeUndo } from '../src/undo.ts';
+import { mergeBranch, openBranchMemory, readInfo, recoverBranches, startBranch } from '../src/branch.ts';
+import { FileStore } from '../src/store.ts';
+import type { Entry } from '../src/memory.ts';
 import { emptyUsage } from '../src/usage.ts';
-import { sessionLog } from './branches-support.ts';
+import { logIn, openBranchDir, sessionLog } from './branches-support.ts';
 import { removeDir } from './support.ts';
 
 const silent = () => {};
@@ -189,4 +192,59 @@ test('planUndo refuses a message folded into a summary line, and keeps notes and
     assert.deepEqual(plan.tools, ['bash'], 'memory tools leave nothing to warn about');
     assert.match(String(planUndo(memory, memory.root.length)), /already in the profile's shared memory/);
   } finally { await memory.close(); removeDir(dir); }
+});
+
+test('/undo trusts the trunk over its own count: a merge that wrote the messages and then failed still counts', async () => {
+  await withProfile(async (profile, dir) => {
+    const s = await start(join(dir, 'pi'), join(dir, 'missing.txt'));
+    try {
+      await s.session.prompt('Half-merged question.');
+      // As a merge that appended to the trunk and then threw would leave it: the trunk has the messages, the session doesn't know.
+      const branchDir = openBranchDir(profile), info = readInfo(branchDir)!;
+      await mergeBranch(profile, branchDir, info, logIn(branchDir), [], 'idle', silent);
+      await s.session.prompt('/undo');
+      assert.match(s.notes.at(-1)!, /^Nothing to undo: your last message is already in the profile's shared memory/);
+      assert.deepEqual(logIn(branchDir).map(e => e.text), ['Half-merged question.', 'ok'], 'the log is untouched');
+    } finally { await s.session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); s.session.dispose(); }
+  });
+});
+
+test('a cut written down but cut off by a crash is finished when the log loads, keeping the notes and reports', async () => {
+  // Short paths: lock sockets have a ~103-byte limit on macOS.
+  const profile = mkdtempSync('/tmp/oc-undo-');
+  try {
+    const started = await startBranch(profile, '/work/a', silent);
+    let memory = await openBranchMemory(profile, started.dir, started.info, () => Promise.resolve('Summary.'), silent);
+    memory.append('user', 'Kept question.'); memory.append('talk', 'ok');
+    memory.append('user', 'Tpyo.'); memory.append('note', '[note from abc (/work)] hi');
+    memory.append('talk', 'partial'); memory.append('work', '[run1] done');
+    await memory.settle(undefined, 'tree');
+    const plan = planUndo(memory, 0);
+    assert.ok(typeof plan !== 'string');
+    await memory.close();
+    // The crash: the intent is on disk, the log is cut, and the kept lines are not back yet.
+    writeUndo(started.dir, plan);
+    cutBranch(started.dir, plan.at);
+    assert.deepEqual(logIn(started.dir).map(e => e.text), ['Kept question.', 'ok']);
+
+    memory = await openBranchMemory(profile, started.dir, started.info, () => Promise.resolve('Summary.'), silent);
+    const expected = [['user', 'Kept question.'], ['talk', 'ok'], ['note', '[note from abc (/work)] hi'], ['work', '[run1] done']];
+    assert.deepEqual(memory.root.map(e => [e.kind, e.text]), expected, 'opening finishes the cut');
+    assert.deepEqual(memory.root.map(e => e.i), [0, 1, 2, 3]);
+    assert.ok(!existsSync(join(started.dir, 'undo.json')), 'and removes the intent');
+    await memory.close();
+
+    // Again, this time crashing before any of the cut: the session that recovers the branch finishes it.
+    memory = await openBranchMemory(profile, started.dir, started.info, () => Promise.resolve('Summary.'), silent);
+    memory.append('user', 'Another tpyo.'); memory.append('note', '[note from def (/work)] yo');
+    const again = planUndo(memory, 0);
+    assert.ok(typeof again !== 'string');
+    await memory.close();
+    writeUndo(started.dir, again);
+    await started.release();
+    assert.deepEqual(await recoverBranches(profile, silent), [started.info.id]);
+    const trunk = (new FileStore(profile, silent).load().entries as Entry[]).sort((a, b) => a.i - b.i);
+    assert.deepEqual(trunk.map(e => e.text).slice(0, 5), [...expected.map(([, text]) => text), '[note from def (/work)] yo']);
+    assert.ok(!trunk.some(e => e.text.includes('tpyo')), 'nothing taken back reaches the shared memory');
+  } finally { removeDir(profile); }
 });

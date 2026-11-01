@@ -84,6 +84,7 @@ Sent a message with a typo? Press Esc to stop the reply, then run `/undo`. It re
 - If the reply ran tools, the log is cleaned but their effects aren't: edited files and commands that ran stay as they are. The notice names the tools.
 - Notes from other sessions and subagent reports that arrived after the message are kept.
 - Pi's own session history (what `/tree` shows) still has the exchange; OptChat just ignores it from then on.
+- The profile's local Git checkpoints, taken after each turn, still have the taken-back text in their history.
 
 ## Models
 

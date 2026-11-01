@@ -10,6 +10,7 @@ import { sessionMessages } from './runs.ts';
 import { noteReceipt, notesText, peekNotes } from './peers.ts';
 import { reportReceipt } from './transcript.ts';
 import { atomicWrite, FileStore, type Mime, type Saved, type Store } from './store.ts';
+import { finishUndo } from './undo.ts';
 
 // A profile's memory is a trunk with branches. The trunk is the profile's memory directory (as before: `main/`, `tree/`,
 // `view.json`), and nobody chats in it. Every Pi session on the profile is a branch: it starts from the trunk's end, sees the
@@ -147,6 +148,8 @@ export class BranchStore implements Store {
     this.own = new FileStore(directory, report);
   }
   async load(): Promise<Saved> {
+    // A /undo cut off halfway is finished before anything reads the log.
+    finishUndo(this.directory, this.report);
     const own = this.own.load();
     const trunk = await withLock(trunkLock(this.profile), describe('reading the trunk'), () => readTrunk(this.profile, this.report));
     if (trunk.entries.length < this.base) throw new Error(`The trunk has ${trunk.entries.length} messages, fewer than this branch started from (${this.base}); refusing to open it.`);
@@ -296,6 +299,16 @@ export async function trunkState(profile: string, warn: (text: string) => void =
   return withLock(trunkLock(profile), describe('reading the trunk'), () => {
     const trunk = readTrunk(profile, warn);
     return { length: trunk.entries.length, view: trunk.saved.view, foreign: (id: string, from: number) => trunk.entries.slice(from).some(e => e.branch?.id !== id) };
+  });
+}
+
+/** How much of a branch's log the trunk has: one past the highest of its messages merged there, or its base. Read from the
+ * trunk itself, so a merge that wrote its messages and then failed still counts. */
+export async function mergedLength(profile: string, info: BranchInfo, warn: (text: string) => void = console.error) {
+  return withLock(trunkLock(profile), describe(`reading what branch ${info.id} merged`), () => {
+    let merged = info.base;
+    for (const e of readTrunk(profile, warn).entries) if (e.branch?.id === info.id) merged = Math.max(merged, e.branch.i + 1);
+    return merged;
   });
 }
 

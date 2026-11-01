@@ -22,7 +22,7 @@ import { isActiveRun, type RunInfo } from './runs.ts';
 import { exportBrowser } from './browser.ts';
 import { Inbox } from './inbox.ts';
 import { checkpoint } from './checkpoint.ts';
-import { closeInfo, listBranches, liveStatus, mergeBranch, openBranchMemory, otherTranscript, recoverBranches, resetBranch, saveInfo, startBranch, trunkState, type BranchInfo, type MergeReason } from './branch.ts';
+import { closeInfo, listBranches, liveStatus, mergeBranch, mergedLength, openBranchMemory, otherTranscript, recoverBranches, resetBranch, saveInfo, startBranch, trunkState, type BranchInfo, type MergeReason } from './branch.ts';
 import { LockBusy, lockPath, takeLock } from './locks.ts';
 import { memoryDirectory, pendingImport, prepareImport, runImport, discardImport } from './import/job.ts';
 import { chooseImport, showProgress } from './import/ui.ts';
@@ -33,7 +33,7 @@ import { inspectorShortcut, mountNavigation } from './navigation.ts';
 import { mainTitle, TabTitle } from './title.ts';
 import { showModelPicker, showSettings } from './settings-page.ts';
 import { showMenu } from './menu.ts';
-import { cutBranch, planUndo } from './undo.ts';
+import { planUndo, writeUndo } from './undo.ts';
 
 const binding = 'optchat.profile';
 const toggle = (prompt: string, line: string, on: boolean, after: string) => on === prompt.includes(line) ? prompt : on ? prompt.replace(after, after + line) : prompt.replace(line, '');
@@ -81,6 +81,8 @@ export default function optchat(pi: ExtensionAPI) {
    * `steered`: last sent into a running turn, where Esc or a dequeue can clear it from Pi's queue unseen. */
   let reports: { text: string; count?: number; batch?: string; steered?: boolean }[] = [];
   type Report = (typeof reports)[number];
+  /** Reports that came in while /undo had memory closed: sent once it has opened again, so their turn starts on the new log. */
+  const heldReports: Report[] = [];
   let idle = () => true;
   const receipts = new Map<AgentMessage, string>();
   let checkpoints = Promise.resolve();
@@ -168,6 +170,7 @@ export default function optchat(pi: ExtensionAPI) {
   // Shown as a dark background box, not as the user's own message. Before this profile has run once there is no
   // built system prompt to reuse, so that rare case still goes through Pi's normal prompt path as a user message.
   const sendReport = (report: Report) => {
+    if (undoing) { if (!heldReports.includes(report)) heldReports.push(report); return; }
     const { text, count } = report;
     report.steered = !idle();
     if (prompt) pi.sendMessage<ReportDetails>({ customType: REPORT_TYPE, content: text, display: true, details: { count } }, { triggerTurn: true, deliverAs: 'steer' });
@@ -416,6 +419,7 @@ export default function optchat(pi: ExtensionAPI) {
       if (ctx.mode !== 'tui' && !fault) return { action: 'continue' };
       ctx.ui.notify(fault ?? 'Select a profile with /optchat profile before chatting.', 'error'); return { action: 'handled' };
     }
+    if (undoing) { ctx.ui.notify('Wait a moment: /undo is still taking back your last message.', 'info'); return { action: 'handled' }; }
     if (importing || pendingImport(active.dir)) { ctx.ui.notify('This profile has an import in progress. Use /optchat import to resume or discard it, or switch profiles.', 'info'); return { action: 'handled' }; }
     if (event.source !== 'extension') {
       try { active.inbox.record(event.text, event.streamingBehavior !== undefined); }
@@ -776,36 +780,54 @@ export default function optchat(pi: ExtensionAPI) {
     if (!ctx.isIdle() || runStarted) throw new Error('/undo works once the reply has stopped. Press Esc to stop it, then run /undo again.');
     if (undoing) return;
     undoing = true;
+    let reopened = false, taken: Exclude<ReturnType<typeof planUndo>, string> | undefined;
     try {
-      // A merge already running decides what is shared; what it took stays.
+      // A merge already running decides what is shared; what it took stays. The trunk itself says how much that is: a merge
+      // that wrote its messages and then failed leaves `branch.merged` behind.
       await merging.catch(() => {});
       flush();
-      const plan = planUndo(a.memory, Math.max(a.branch.merged, a.branch.info.base));
-      if (typeof plan === 'string') throw new Error(plan);
+      const shared = () => mergedLength(a.dir, a.branch.info, warning => ctx.ui.notify(warning, 'warning'));
+      const first = planUndo(a.memory, Math.max(a.branch.merged, await shared()));
+      if (typeof first === 'string') throw new Error(first);
+      if (!ctx.isIdle() || runStarted) throw new Error('/undo works once the reply has stopped. Press Esc to stop it, then run /undo again.');
       const old = a.memory;
       await old.close();
-      let memory: Memory;
       try {
-        cutBranch(a.branch.dir, plan.at);
+        // Planned again on the closed log: a subagent may have logged a line since, and from here on its lines wait in Children.
+        const plan = planUndo(old, Math.max(a.branch.merged, await shared()));
+        if (typeof plan === 'string') throw new Error(plan);
+        // Once written down, the cut happens: opening the branch's memory below carries it out (src/undo.ts).
+        writeUndo(a.branch.dir, plan);
+        taken = plan;
       } finally {
-        // Opened again even when the cut failed halfway, so the session keeps a memory to log into.
+        // Opened again even when planning failed, so the session keeps a memory to log into.
+        let memory: Memory | undefined;
         try { memory = await openBranchMemory(a.dir, a.branch.dir, a.branch.info, a.compress, warning => ctx.ui.notify(warning, 'error'), undefined, a.config.jobs); }
-        catch (error) { fault = `OptChat could not reopen its memory after /undo: ${errorText(error)}. Restart Pi.`; throw new Error(fault); }
-        a.memory = memory; a.children.memory = memory;
+        catch (error) { fault = `OptChat could not reopen its memory after /undo: ${errorText(error)}. Restart Pi.`; ctx.ui.notify(fault, 'error'); }
+        if (memory) {
+          // Lines Children held while memory was closed go in now, after the kept ones, so the log stays in date order.
+          a.memory = memory; a.children.memory = memory; reopened = true;
+          Object.assign(a.branch, { seen: memory.batches, length: memory.root.length, changed: Date.now() });
+          mountNav(ctx); status(ctx); share(ctx);
+          try { publishView(a.branch.dir, memory.render()); } catch { /* published again after the next turn */ }
+        }
       }
-      for (const e of plan.keep) memory.append(e.kind, e.text, e.date, e.receipt, e.origin);
-      Object.assign(a.branch, { seen: memory.batches, length: memory.root.length, changed: Date.now() });
-      run = []; logged = 0; keep = 0; view = undefined; previous = [];
-      // The previous-exchange replay reads Pi's own session, which still has the exchange: this marks it as taken back.
-      pi.appendEntry(RUN_BOUNDARY, { state: 'undo', since: Date.parse(plan.date) });
-      mountNav(ctx); status(ctx); share(ctx);
-      try { publishView(a.branch.dir, memory.render()); } catch { /* published again after the next turn */ }
-      const typedBack = typedFor(ctx, plan.date) ?? plan.text;
-      const editor = ctx.hasUI && ctx.mode === 'tui' && !ctx.ui.getEditorText().trim();
-      if (editor) ctx.ui.setEditorText(typedBack);
-      const tools = plan.tools.length ? `\nIt ran ${plan.tools.join(', ')}: the log is cleaned, but what those tools changed (files, commands) was not undone.` : '';
-      ctx.ui.notify(`OptChat took back your last message (${plan.removed} line${plan.removed === 1 ? '' : 's'} of the log).${editor ? ' It is back in the editor.' : `\nYou wrote:\n${typedBack}`}${tools}`, tools ? 'warning' : 'info');
-    } finally { undoing = false; }
+      if (taken && reopened) done(ctx, taken);
+    } finally {
+      undoing = false;
+      if (reopened || !a.memory.closed) for (const r of heldReports.splice(0)) sendReport(r);
+    }
+  };
+  /** After the cut: forget the taken-back run, mark it in Pi's session, and give the message back. */
+  const done = (ctx: ExtensionCommandContext, plan: Exclude<ReturnType<typeof planUndo>, string>) => {
+    run = []; logged = 0; keep = 0; view = undefined; previous = [];
+    // The previous-exchange replay reads Pi's own session, which still has the exchange: this marks it as taken back.
+    pi.appendEntry(RUN_BOUNDARY, { state: 'undo', since: Date.parse(plan.date) });
+    const typedBack = typedFor(ctx, plan.date) ?? plan.text;
+    const editor = ctx.hasUI && ctx.mode === 'tui' && !ctx.ui.getEditorText().trim();
+    if (editor) ctx.ui.setEditorText(typedBack);
+    const tools = plan.tools.length ? `\nIt ran ${plan.tools.join(', ')}: the log is cleaned, but what those tools changed (files, commands) was not undone.` : '';
+    ctx.ui.notify(`OptChat took back your last message (${plan.removed} line${plan.removed === 1 ? '' : 's'} of the log).${editor ? ' It is back in the editor.' : `\nYou wrote:\n${typedBack}`}${tools}`, tools ? 'warning' : 'info');
   };
   /** What the user typed for the message logged at `date`, from Pi's session, without Pi's image notes; images can't go back. */
   const typedFor = (ctx: ExtensionContext, date: string) => {
