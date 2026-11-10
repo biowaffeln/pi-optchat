@@ -7,7 +7,7 @@ import * as sdk from '@earendil-works/pi-coding-agent';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { StringEnum, type Api, type Model } from '@earendil-works/pi-ai';
 import { allowSearch, cutOffChildren, delegation, NO_DELEGATION, READ_ONLY, READ_ONLY_BASH, READ_ONLY_NO_BASH, RESTARTED, SEARCH_DOC, STEERABLE, SUBAGENT, SUBAGENT_NO_MEMORY, TELL_PARENT, VIEW_DOC, worktreeDoc } from './prompts.ts';
-import { DEFAULT_ROLES, TOOL_SETS, type Roles, type ToolSet } from './roles.ts';
+import { TOOL_SETS, type Roles, type ToolSet } from './roles.ts';
 import { closeWorktree, createWorktree, discardWorktree, finishWorktree, reopenWorktree, repoOf, SettleError, type Worktree } from './worktree.ts';
 import { memoryTools, searchTool } from './tools.ts';
 import { findSandbox, READ_ONLY_TOOLS, sandboxedBashTool, type Sandbox } from './sandbox.ts';
@@ -51,7 +51,7 @@ interface Options { parentSession?: string; usage?: UsageLedger; createSession?:
   hold?: (batch: string, texts: string[]) => void;
   /** Read on every spawn, so a changed profile setting applies to the next one. Missing settings take their defaults. */
   settings?: () => Partial<Settings>;
-  /** The roles a task may name; the built-in ones when unset. */
+  /** The roles a task may name; none when unset. */
   roles?: () => Roles;
   /** The sandbox a read-only child's bash runs in; `findSandbox` when unset. Undefined from it means no bash. */
   sandbox?: () => Sandbox | undefined }
@@ -179,7 +179,7 @@ export class Children {
     }
   }
   private get settings(): Settings { return { ...DEFAULT_SETTINGS, ...this.options.settings?.() }; }
-  get roles(): Roles { return this.options.roles?.() ?? DEFAULT_ROLES; }
+  get roles(): Roles { return this.options.roles?.() ?? {}; }
   /**
    * Each task's model, thinking, tools and memory: what the task sets, else its role's, else the profile's subagent choice
    * (tools all, memory on). A read-only parent's children are read-only too, so delegating can't get around it.
@@ -188,7 +188,7 @@ export class Children {
     const profile = this.choice(), roles = this.roles;
     return tasks.map((task, i) => {
       const role = task.role === undefined ? undefined : roles[task.role];
-      if (task.role !== undefined && !role) throw new Error(`Task ${i + 1}: no role ${task.role}. Roles: ${Object.keys(roles).join(', ') || 'none (this profile\'s config.json sets an empty roles object)'}.`);
+      if (task.role !== undefined && !role) throw new Error(`Task ${i + 1}: no role ${task.role}. Roles: ${Object.keys(roles).join(', ') || 'none (add a roles object to this profile\'s config.json)'}.`);
       const named = task.model ?? role?.model, name = named ?? `${profile.provider}/${profile.model}`, model = this.find(name);
       // Like Pi's own setModel: a named model needs auth, so a guess at a provider the user isn't logged in to fails here, not in the child.
       // A role's model is never swapped for another: the role was picked for it.

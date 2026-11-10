@@ -9,7 +9,6 @@ import { Memory, type Compressor } from './memory.ts';
 import { atomicWrite } from './store.ts';
 import { createCompressor, type ModelChoice } from './compactor.ts';
 import { createProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, profilePath, rememberProfile, saveConfig, type ProfileConfig } from './profiles.ts';
-import { DEFAULT_ROLES } from './roles.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, MASTER, modelsHint, PEERS_DOC, SEARCH_DOC, TURN_REFRESHED, VIEW_DOC } from './prompts.ts';
 import { cachePayload, record } from './cache.ts';
 import { saveImages } from './images.ts';
@@ -329,7 +328,7 @@ export default function optchat(pi: ExtensionAPI) {
       const recoveredInputs = pendingImport(dir) ? 0 : inbox.recover(memory);
       if (recoveredInputs) ctx.ui.notify(`Recovered ${recoveredInputs} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
       const children = new Children(memory, ctx.modelRegistry, () => config.subagent, () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}`,
-        deliverReport, text => ctx.ui.notify(text, 'error'), started.dir, { parentSession: sessionId, usage, builtins: () => loadedBuiltins(pi), settings: () => config, roles: () => config.roles ?? DEFAULT_ROLES, hold: holdReports });
+        deliverReport, text => ctx.ui.notify(text, 'error'), started.dir, { parentSession: sessionId, usage, builtins: () => loadedBuiltins(pi), settings: () => config, roles: () => config.roles ?? {}, hold: holdReports });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
       // Reports a crash held back with their unfinished siblings are delivered now, as they are.
       reports = saved.map(s => typeof s === 'string' ? { text: s } : { text: s.text, count: s.count })
@@ -454,7 +453,7 @@ export default function optchat(pi: ExtensionAPI) {
     const a = required();
     // Pi's own prompt sections (AGENTS.md files, skills, cwd) stay; the profile's instructions go last.
     syncSearch(a.config);
-    event.systemPromptOptions.customPrompt = allowSearch(`${MASTER}\n\n${modelsHint(a.config.subagent, a.config.roles ?? DEFAULT_ROLES)}\n\n${PEERS_DOC}\n\n${VIEW_DOC}${a.config.previousExchange ? CONTINUITY : ''}${a.config.memorySearch ? SEARCH_DOC : ''}`, a.config.memorySearch);
+    event.systemPromptOptions.customPrompt = allowSearch(`${MASTER}\n\n${modelsHint(a.config.subagent, a.config.roles ?? {})}\n\n${PEERS_DOC}\n\n${VIEW_DOC}${a.config.previousExchange ? CONTINUITY : ''}${a.config.memorySearch ? SEARCH_DOC : ''}`, a.config.memorySearch);
     event.systemPromptOptions.sections.instructions = `${instructions(a.dir)}\n\n${IMPORT_GUIDANCE}`;
     refreshContextFiles(event.systemPromptOptions);
     prompt = event.systemPrompt;

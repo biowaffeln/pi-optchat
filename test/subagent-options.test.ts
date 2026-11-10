@@ -11,7 +11,7 @@ import { Children, readOnlyAllowlist } from '../src/agents.ts';
 import { Memory } from '../src/memory.ts';
 import { modelsHint, READ_ONLY, READ_ONLY_BASH, READ_ONLY_NO_BASH } from '../src/prompts.ts';
 import { READ_ONLY_TOOLS, type Sandbox } from '../src/sandbox.ts';
-import { DEFAULT_ROLES, invalidRoles, rolesDoc, type Roles } from '../src/roles.ts';
+import { invalidRoles, rolesDoc, type Roles } from '../src/roles.ts';
 import { RunHistory } from '../src/runs.ts';
 import { loadConfig } from '../src/profiles.ts';
 import { emptyUsage } from '../src/usage.ts';
@@ -121,23 +121,23 @@ test('a role presets model, thinking, tools and memory; task fields override it;
   } finally { await children.close(); removeDir(dir); }
 });
 
-test('without roles in config.json the built-in four apply, and the prompt lists them with what they set', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'optchat-default-roles-')), { children } = await harness(dir);
+test('without roles in config.json there are none: naming one fails, and the prompt has no roles section', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-no-roles-')), { children } = await harness(dir);
   try {
-    assert.deepEqual(Object.keys(children.roles), ['scout', 'implementer', 'reviewer', 'elder']);
-    assert.equal(DEFAULT_ROLES.reviewer.model, 'anthropic/claude-opus-5-5');
-    assert.equal(DEFAULT_ROLES.elder.thinking, 'xhigh');
-    assert.deepEqual([DEFAULT_ROLES.scout.tools, DEFAULT_ROLES.scout.memory, DEFAULT_ROLES.scout.model], ['readonly', false, 'openai-codex/gpt-6-luna']);
-    // The test registry has no Anthropic login: a role that needs one fails clearly instead of running on the default.
-    assert.throws(() => children.resolve([{ task: 'x', role: 'reviewer' }]), /role reviewer's model is unavailable: anthropic\/claude-opus-5-5/);
-    const hint = modelsHint({ provider: 'p', model: 'm', thinking: 'medium' }, DEFAULT_ROLES);
-    assert.match(hint, /Pick one freely/);
-    assert.match(hint, /Set model or thinking yourself only when the user asks/);
-    assert.match(hint, /- scout \(openai-codex\/gpt-6-luna, thinking low, read-only, no memory\): Fast read-only recon/);
-    assert.match(hint, /- implementer \(subagent model\): Executes/);
+    assert.deepEqual(children.roles, {});
+    assert.throws(() => children.resolve([{ task: 'x', role: 'reviewer' }]), /Task 1: no role reviewer\. Roles: none \(add a roles object to this profile's config\.json\)\./);
+    assert.equal(children.resolve([{ task: 'x' }])[0].model.id, 'child');
     assert.equal(rolesDoc({}), '');
     assert.doesNotMatch(modelsHint({ provider: 'p', model: 'm', thinking: 'medium' }), /role/);
   } finally { await children.close(); removeDir(dir); }
+});
+
+test('the prompt lists configured roles with what they set', () => {
+  const hint = modelsHint({ provider: 'p', model: 'm', thinking: 'medium' }, ROLES);
+  assert.match(hint, /Pick one freely/);
+  assert.match(hint, /Set model or thinking yourself only when the user asks/);
+  assert.match(hint, /- looker \(optchat-test\/deep, thinking low, read-only, no memory\): Looks around\./);
+  assert.match(hint, /- builder \(subagent model\): Builds\./);
 });
 
 test('config.json roles are validated and kept; a bad one names what is wrong', () => {

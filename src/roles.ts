@@ -8,14 +8,6 @@ export type Thinking = typeof THINKING[number];
 export interface Role { description: string; model?: string; thinking?: Thinking; tools?: ToolSet; memory?: boolean }
 export type Roles = Record<string, Role>;
 
-/** Used when a profile's config.json has no `roles`; a `roles` object there replaces this list as a whole. */
-export const DEFAULT_ROLES: Roles = {
-  scout: { description: 'Fast read-only recon: finding files, tracing symbols, mapping unfamiliar code.', model: 'openai-codex/gpt-6-luna', thinking: 'low', tools: 'readonly', memory: false },
-  implementer: { description: 'Executes a well-specified brief: writes code, runs tests, commits.', tools: 'all' },
-  reviewer: { description: 'Reviews diffs, branches or modules for bugs, design issues and risky assumptions.', model: 'anthropic/claude-opus-5-5', thinking: 'high', tools: 'readonly' },
-  elder: { description: 'The hardest reasoning: design decisions, subtle correctness, debugging that resisted earlier attempts.', model: 'anthropic/claude-opus-5-5', thinking: 'xhigh', tools: 'readonly' },
-};
-
 const ROLE_NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 /** Why a `roles` value can't be used, or undefined if it can. */
 export function invalidRoles(value: unknown): string | undefined {

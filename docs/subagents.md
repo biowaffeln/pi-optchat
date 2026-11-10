@@ -27,16 +27,15 @@ Each task runs the profile's subagent model (`/optchat agents model`), unless th
 
 A task's `role` presets its model, thinking, tools and memory in one go. The main agent's instructions list every role with its description and what it sets, and the agent may pick one whenever it fits the task, without being asked; it still sets `model` or `thinking` by hand only when you ask.
 
-Built in, used when the profile's `config.json` has no `roles`:
+There are no built-in roles. Without a `roles` object in the profile's `config.json`, the instructions have no roles section and a task that names a role fails. An example, with a cheap model for recon and stronger ones for review:
 
 | Role | Model | Thinking | Tools | Memory | For |
 | --- | --- | --- | --- | --- | --- |
 | `scout` | `openai-codex/gpt-6-luna` | low | read-only | off | Fast recon: finding files, tracing symbols |
-| `implementer` | subagent model | subagent level | all | on | Executing a well-specified brief |
 | `reviewer` | `anthropic/claude-opus-5-5` | high | read-only | on | Reviewing diffs and modules for bugs and risky assumptions |
 | `elder` | `anthropic/claude-opus-5-5` | xhigh | read-only | on | The hardest reasoning, debugging that resisted earlier attempts |
 
-- A `roles` object in `config.json` replaces this list as a whole (an empty object means no roles). Each entry is `{ "description": ..., "model"?: "provider/id", "thinking"?: ..., "tools"?: "all" | "readonly", "memory"?: boolean }`; names are lowercase letters, digits, `-` and `_`. A bad entry makes the profile refuse to open, with a message naming it. Edits apply after `/reload`.
+- Each entry in `roles` is `{ "description": ..., "model"?: "provider/id", "thinking"?: ..., "tools"?: "all" | "readonly", "memory"?: boolean }`; names are lowercase letters, digits, `-` and `_`. A bad entry makes the profile refuse to open, with a message naming it. Edits apply after `/reload`.
 - Precedence, per field: what the task sets, then the role, then the profile (subagent model and level, all tools, memory on).
 - A role's model must be one Pi is logged in to. If it isn't, the whole spawn fails before any child starts, naming the task and the role; it never falls back to another model. Naming a `model` on the task gets around it.
 - A role is saved with the run and shown in the agent view's header, next to the model.

@@ -131,12 +131,13 @@ Ask in plain words, for example: "Spawn an agent to investigate this repository 
 - **What they get**: the profile's memory view (frozen at launch) and instructions, read-only `zoom`/`date`, normal coding tools, your installed extensions, and your MCP servers.
 - **Reports**: each child reports when it finishes, as one message starting `[id]`, shown in a dark grey `↳ subagent <id>` box. Turn on **Group subagent reports** to get one message per spawn instead.
 - **Model**: children run the profile's subagent model. Ask for another in your request ("review it with anthropic/claude-haiku-5-5 at low") and the agent sets that task's `model` and `thinking`.
-- **Roles**: a task can name a role that presets its model, thinking, tools and memory. The built-in ones are `scout` (GPT-6 Luna, low, read-only, no memory), `implementer` (the subagent model, all tools), `reviewer` (Opus 5.5, high, read-only) and `elder` (Opus 5.5, xhigh, read-only). The agent picks a role on its own when one fits; fields set on the task win over the role. To change them, put a `roles` object in the profile's `config.json`; it replaces the built-in list as a whole:
+- **Roles**: a task can name a role that presets its model, thinking, tools and memory. There are none by default: you define them under `roles` in the profile's `config.json`, using models you're logged in to. The agent picks a role on its own when one fits; fields set on the task win over the role. A setup that works well:
 
   ```json
   "roles": {
-    "reviewer": { "description": "Reviews diffs for bugs.", "model": "anthropic/claude-sonnet-5-5", "thinking": "high", "tools": "readonly" },
-    "writer": { "description": "Drafts docs.", "memory": false }
+    "scout": { "description": "Fast read-only recon: finding files, tracing symbols, mapping unfamiliar code.", "model": "openai-codex/gpt-6-luna", "thinking": "low", "tools": "readonly", "memory": false },
+    "reviewer": { "description": "Reviews diffs, branches or modules for bugs, design issues and risky assumptions.", "model": "anthropic/claude-opus-5-5", "thinking": "high", "tools": "readonly" },
+    "elder": { "description": "The hardest reasoning: design decisions, subtle correctness, debugging that resisted earlier attempts.", "model": "anthropic/claude-opus-5-5", "thinking": "xhigh", "tools": "readonly" }
   }
   ```
 
