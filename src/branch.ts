@@ -5,6 +5,7 @@ import { basename, join, relative, sep } from 'node:path';
 import { record } from './cache.ts';
 import { memoryDirectory } from './import/job.ts';
 import { holder, lockPath, takeLock, withLock } from './locks.ts';
+import { machineId } from './machine.ts';
 import { bytes, end, flat, isEntry, Memory, start, type Entry, type Compressor, type Kind, type Summary } from './memory.ts';
 import { sessionMessages } from './runs.ts';
 import { noteReceipt, notesText, peekNotes } from './peers.ts';
@@ -28,7 +29,11 @@ export interface BranchInfo {
   id: string;
   /** The trunk's length when this branch started: messages before it are the trunk's, from it on the branch's own. */
   base: number;
-  created: string; cwd: string; pid: number; host: string;
+  created: string; cwd: string; pid: number;
+  /** The hostname, for messages only: it can change under a running Pi. */
+  host: string;
+  /** A stable id of the computer the branch runs on (see machineId). Older branches lack it and fall back to `host`. */
+  machine?: string;
   /** The trunk's memory folder, relative to the profile ('.' unless an import made a new generation): a branch merges only there. */
   trunk?: string;
   /** Set when the branch closed and merged everything; a branch without it whose process is gone crashed. */
@@ -105,7 +110,7 @@ export async function startBranch(profile: string, cwd: string, warn: (text: str
   let id: string, dir: string;
   do { id = randomBytes(4).toString('hex').slice(0, 6); dir = branchDirectory(profile, id); } while (existsSync(dir));
   mkdirSync(dir, { mode: 0o700 });
-  const info: BranchInfo = { id, base: 0, created: new Date().toISOString(), cwd, pid: process.pid, host: hostname() };
+  const info: BranchInfo = { id, base: 0, created: new Date().toISOString(), cwd, pid: process.pid, host: hostname(), machine: machineId() };
   let status: Record<string, unknown> = { id, cwd, pid: info.pid, host: info.host, created: info.created };
   const release = await takeLock(liveLock(dir), () => JSON.stringify(status));
   try {
@@ -229,6 +234,9 @@ function copyImages(from: string, to: string) {
   for (const name of readdirSync(source)) if (!existsSync(join(to, 'images', name))) copyFileSync(join(source, name), join(to, 'images', name));
 }
 
+/** Whether a branch runs on this computer. Branches from before `machine` existed can only be judged by hostname. */
+const onThisMachine = (info: BranchInfo) => info.machine !== undefined ? info.machine === machineId() : info.host === hostname();
+
 /** Marks a branch closed after its last merge. Its folder stays: it holds the branch's subagent runs and transcripts. */
 export function closeInfo(dir: string, info: BranchInfo) { info.closed = new Date().toISOString(); delete info.closing; saveInfo(dir, info); }
 
@@ -239,7 +247,7 @@ export async function recoverBranches(profile: string, warn: (text: string) => v
   for (const listed of listBranches(profile)) {
     if (listed.closed) continue;
     // A lock only proves something about processes on this machine: a branch another host runs (a shared folder) is left to it.
-    if (listed.host !== hostname()) { warn(`Branch ${listed.id} runs on ${listed.host}; only a Pi there can merge it if it crashed.`); continue; }
+    if (!onThisMachine(listed)) { warn(`Branch ${listed.id} runs on ${listed.host}; only a Pi there can merge it if it crashed.`); continue; }
     const dir = branchDirectory(profile, listed.id);
     let release: (() => Promise<void>) | undefined;
     // Taking its lock both proves its process is gone and keeps another Pi from recovering it at the same time.

@@ -219,7 +219,7 @@ test('recovery leaves alone a branch that closed while it waited, one from anoth
   await recovering;
   const other = await branch(profile);
   other.memory.append('user', 'said on another machine'); await other.memory.close();
-  saveInfo(other.dir, { ...other.info, host: 'elsewhere' }); await other.release();
+  saveInfo(other.dir, { ...other.info, host: 'elsewhere', machine: 'elsewhere-id' }); await other.release();
   const broken = await branch(profile);
   broken.memory.append('user', 'said before the journal broke'); await broken.memory.close();
   writeFileSync(join(broken.dir, 'pending-inputs.json'), '[{"id": "half');
@@ -231,6 +231,21 @@ test('recovery leaves alone a branch that closed while it waited, one from anoth
   assert.match(warnings.join('\n'), new RegExp(`Could not recover branch ${broken.info.id}`));
   assert.ok(!readInfo(other.dir)?.closed && !readInfo(broken.dir)?.closed, 'both stay to be recovered later');
   assert.ok(!trunkLog(profile).some(e => e.text === 'said before the journal broke'));
+});
+
+test('the machine id decides where a branch runs, so a hostname that changed under it does not strand it', async () => {
+  const profile = home();
+  await trunkWith(profile, 1);
+  const renamed = await branch(profile);
+  renamed.memory.append('user', 'said before the hostname changed'); await renamed.memory.close();
+  saveInfo(renamed.dir, { ...renamed.info, host: 'old-name' }); await renamed.release();
+  const legacy = await branch(profile);
+  legacy.memory.append('user', 'said in an old branch'); await legacy.memory.close();
+  const { machine: _, ...old } = legacy.info;
+  saveInfo(legacy.dir, { ...old, host: 'old-name' }); await legacy.release();
+  const warnings: string[] = [];
+  assert.deepEqual(await recoverBranches(profile, w => warnings.push(w)), [renamed.info.id]);
+  assert.match(warnings.join('\n'), new RegExp(`Branch ${legacy.info.id} runs on old-name`), 'without a machine id only the hostname is left to go by');
 });
 
 test('an interrupted branch that said nothing new adds no note', async () => {
