@@ -24,7 +24,6 @@ const builtIns: Record<string, (cwd: string) => Renderers> = {
   grep: createGrepToolDefinition, find: createFindToolDefinition, ls: createLsToolDefinition,
 };
 
-
 /** Who a user-role message in the child's conversation came from. Runs saved before senders were recorded count as the user's. */
 export function senderOf(text: string, guidance: Guidance = []): 'user' | 'manager' | 'report' {
   if (isReport(text)) return 'report';

@@ -8,7 +8,7 @@ The README has the summary table. This page has the detail: what changed in each
 
 - **Main agent.** The turn rules are the revised recipe's (2026-10-08) word for word, with three changes:
   - its paragraph on computers is left out;
-  - reports start `[id] ` instead of `[Name]`;
+  - reports start `[id] ` (or `[id · title] ` when the spawn gave a title) instead of `[Name]`;
   - two sentences are added: don't poll anything slow (CI, a deploy) yourself, hand the watching to a subagent; and a message starting `[OptChat status]` is OptChat's own note, not the user.
 - **View doc.** Keeps the original's description of the view. It drops the "No message appears in full" line (untrue with Previous exchange on) and the list of when to zoom, adds one sentence on zooming out from a message to the summaries above it, and ends with the revised recipe's rule that memory comes first and zoom is the only way through it. Where the recipe says the view's "latest word on a thing is the truth", OptChat says it replaces anything older, and adds that what was said is not always true now: a fact can start later, and a tool can show a newer state. Apps keep their own state, and a tool can show something newer than the view (upstream #279). Upstream's A/B (~1,000 runs, Opus 5.5 and Sonnet 5.5) found no regression, memory-first lookups included.
 - **Compactor.** The revised recipe's intro, view and Compactions sections (with its closing note that compaction is a small, mechanical job to do fast with few tokens), without its turn-only sections, and with:

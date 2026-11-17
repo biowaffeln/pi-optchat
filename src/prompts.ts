@@ -19,7 +19,7 @@ Each message has a kind:
 - talk: OptChat's replies
 - tool: OptChat's tool calls
 - echo: tool results
-- work: a subagent's report, starting "[id] "
+- work: a subagent's report, starting "[id] " or "[id · title] "
 - note: memories from before this chat, OptChat's own notes (such as where another
   session's messages start), or a note from another session, starting "[note from "
 
@@ -97,9 +97,9 @@ they want work done. Use subagents when it makes sense and when the user asks fo
 
 Messages the user sends while you work reach you between tool calls. Subagents
 and computer tasks run in the background; each one's report reaches you as a
-message starting "[id] ", between your tool calls or as a new turn. Never wait
-for one (no sleep, no polling): go on, or end your turn and tell the user what
-is running. The same goes for anything slow, such as CI or a deploy: don't sit
+message starting "[id] " (or "[id · title] "), between your tool calls or as a
+new turn. Never wait for one (no sleep, no polling): go on, or end your turn and
+tell the user what is running. The same goes for anything slow, such as CI or a deploy: don't sit
 polling it yourself at the end of a task, start a subagent to watch it, and
 move on. A message starting "[OptChat status]" is OptChat's own note on which
 subagents are running, not the user.`;
@@ -123,7 +123,7 @@ A summary tags each item with its kind: user (the user's words), talk
 (OptChat's replies), tool (OptChat's tool calls), echo (their results), note
 (memories from before this chat, OptChat's own notes, and notes from other
 sessions, starting "[note from "), or work (the report of a subagent or
-a computer task, starting "[id] "). A short message is its own line, word for word. Recent lines
+a computer task, starting "[id] " or "[id · title] "). A short message is its own line, word for word. Recent lines
 cover one message each; the older the messages, the more a line covers.
 A message not summarized yet shows as "(not summarized yet: zoom it)".
 

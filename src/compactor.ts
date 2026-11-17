@@ -77,8 +77,8 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     const request = (note?: string): Message[] => [{ role: 'user', timestamp: Date.now(), content: [
       { type: 'text', text: input.context },
       { type: 'text', text: `\n\n${input.historical ? IMPORT_GUIDANCE + '\n\n' : ''}${compaction({ ...input, images })}` },
-      ...note ? [{ type: 'text' as const, text: `\n\n${note}` }] : [],
-      ...images.flatMap(({ name, image }) => [{ type: 'text' as const, text: `\n[image ${name}]` }, image])] }];
+      ...images.flatMap(({ name, image }) => [{ type: 'text' as const, text: `\n[image ${name}]` }, image]),
+      ...note ? [{ type: 'text' as const, text: `\n\n${note}` }] : []] }];
     let messages = request();
     const view = splitView(input.context);
     const prefix = model.api === 'anthropic-messages' && view.length > 1 ? `${model.provider}/${model.id}/${thinking ?? 'off'}\n${view.slice(0, -1).join('')}` : undefined;

@@ -320,6 +320,7 @@ export class Memory {
     const input = cap(mergeSource, SOURCE);
     // Only the images whose names the compactor gets: a huge message's cut middle sends neither.
     const images = part.l === 0 && !this.copiesMemory(part.i) ? await namedImages(this.store, input) : [];
+    if (this.stopped) return;
     const short = bytes(source) <= NODE;
     let text = source;
     if (!short || images.length) try {

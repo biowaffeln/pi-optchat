@@ -180,7 +180,7 @@ const chart = { type: 'image' as const, data: 'iVBORw0K', mimeType: 'image/png' 
 const SHORT = 'user: [image 0123456789abcdef]', LINE = 'user sent a bar chart: sales doubled in May';
 const hasImage = (content: Context['messages'][number]['content']) => Array.isArray(content) && content.some(part => part.type === 'image');
 /** A compactor on a stub model that logs each request's content; `rejects` fails the requests with images, or all of them. */
-async function imageCompressor(input: ('text' | 'image')[], rejects?: 'images' | 'all') {
+async function imageCompressor(input: ('text' | 'image')[], rejects?: 'images' | 'all', first = LINE) {
   const sent: Context['messages'][number]['content'][] = [];
   const dir = mkdtempSync(join(tmpdir(), 'optchat-compactor-'));
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
@@ -191,7 +191,7 @@ async function imageCompressor(input: ('text' | 'image')[], rejects?: 'images' |
       const content = context.messages.find(m => m.role === 'user')!.content, failed = rejects === 'all' || (rejects === 'images' && hasImage(content));
       sent.push(content);
       const stream = createAssistantMessageEventStream(), message: AssistantMessage = { role: 'assistant', api: model.api, provider: model.provider,
-        model: model.id, timestamp: Date.now(), usage: emptyUsage(), content: [{ type: 'text', text: LINE }],
+        model: model.id, timestamp: Date.now(), usage: emptyUsage(), content: [{ type: 'text', text: sent.length === 1 ? first : LINE }],
         ...(failed ? { stopReason: 'error', errorMessage: 'image exceeds 5 MB maximum' } : { stopReason: 'stop' }) };
       queueMicrotask(() => { stream.push({ type: 'done', reason: 'stop', message }); stream.end(); });
       return stream;
@@ -204,6 +204,7 @@ async function imageCompressor(input: ('text' | 'image')[], rejects?: 'images' |
 test('a leaf gets its images after the view and the task, and a text-only model gets none', async () => {
   const seeing = await imageCompressor(['text', 'image']);
   assert.equal(await seeing.compress(SHORT), LINE, 'a line about an image may outgrow its source');
+  assert.equal(seeing.sent.length, 1, 'kept on the first try, though longer than its source');
   const [content] = seeing.sent;
   assert.ok(Array.isArray(content));
   assert.deepEqual(content.map(c => c.type), ['text', 'text', 'text', 'image']);
@@ -243,4 +244,16 @@ test("on Anthropic a leaf's cache marks stay on the view, with the task and its 
   const blocks = bodies[0].messages[0].content, marked = blocks.filter(block => 'cache_control' in block);
   assert.ok(marked.length > 0 && marked.every(block => typeof block.text === 'string' && block.text.includes('0+1|user: an old remembered line')));
   assert.deepEqual(blocks.slice(-2).map(block => [block.type, 'cache_control' in block]), [['text', false], ['image', false]]);
+});
+
+test('a too-long retry with images sends the view, the task, each image after its name, then the size note', async () => {
+  const retried = await imageCompressor(['text', 'image'], undefined, 'x'.repeat(2000));
+  assert.equal(await retried.compress(SHORT), LINE);
+  assert.equal(retried.sent.length, 2);
+  const content = retried.sent[1];
+  assert.ok(Array.isArray(content));
+  assert.deepEqual(content.map(c => c.type), ['text', 'text', 'text', 'image', 'text']);
+  assert.equal(content[2].type === 'text' && content[2].text, '\n[image 0123456789abcdef]');
+  assert.match(content[4].type === 'text' ? content[4].text : '', /^\n\n\S/, 'the note comes last, in its own paragraph');
+  assert.deepEqual(content.slice(0, 4), (retried.sent[0] as typeof content).slice(0, 4), 'everything before the note is the first request');
 });
