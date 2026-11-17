@@ -19,7 +19,7 @@ export interface Summary extends Part { text: string; size: number }
  * answers, raw, since its own line is often not built yet (#153). */
 export interface Compression { context: string; source: string; part: Part; historical?: boolean; call?: { i: number; text: string } }
 export type Compressor = (input: Compression, signal: AbortSignal) => Promise<string>;
-/** A compressor throws this when the model itself gives no line for an input (a refusal, an empty reply, 5 cut-off replies):
+/** A compressor throws this when the model itself gives no line for an input (a refusal, 5 cut-off or empty replies):
  * asked again it fails alike, so the node keeps the start of its source instead of being retried forever (#193). */
 export class Refused extends Error {}
 const key = ({ l, i }: Part) => l * 2 ** 40 + i;

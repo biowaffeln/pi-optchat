@@ -39,6 +39,6 @@ A memory gauge: how many messages the profile holds and how much of the 128 KB v
 
 - If summarizing keeps failing, the last error and the retry countdown show under it. A turn waiting for summaries shows the same error next to its spinner, usually a summarizer model you aren't logged in to (`/optchat model`).
 - Once every summary a turn waits for has failed, the turn goes on, with "(not summarized yet: zoom it)" in place of the missing lines, and the failed summaries keep retrying in the background.
-- A summary the model itself won't write (a refusal, an empty reply, or 5 replies cut off at the token limit) isn't retried: that line keeps the start of what it summarizes, after "(not summarized: zoom it)", and a warning names it once. Errors such as a dropped connection, a rate limit or a missing login keep retrying.
+- A summary the model itself won't write (a refusal, or 5 replies cut off at the token limit or saying nothing at all) isn't retried: that line keeps the start of what it summarizes, after "(not summarized: zoom it)", and a warning names it once. Errors such as a dropped connection, a rate limit or a missing login keep retrying.
 - It also counts running agents, and interrupted ones waiting for you; their list is on Agents.
 - While summaries or agents are at work, the bar's Activity item gets a **●**.

@@ -7,7 +7,7 @@ import { createAssistantMessageEventStream, type AssistantMessage } from '@earen
 import { ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createCompressor } from '../src/compactor.ts';
 import { COMPACT, compaction } from '../src/prompts.ts';
-import { bytes, NODE } from '../src/memory.ts';
+import { NODE, Refused } from '../src/memory.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
 
@@ -15,9 +15,9 @@ let sentReasoning: string | undefined;
 let sentStep = '';
 let sentRetry = '';
 let sentMessages = 0;
-/** A fake model whose first reply is `first` bytes long and whose retries fit. */
+/** A fake model whose first reply is `first` bytes long and whose retries fit. `firstEnd` makes the first `ends` replies no summary. */
 async function attempts(first: number, { source = 'user: ' + 'a long message '.repeat(70), merge = false, accepted, first: text = 'x', firstEnd, ends = 1 }:
-  { source?: string; merge?: boolean; accepted?: number; first?: string; firstEnd?: 'length' | 'toolUse'; ends?: number } = {}) {
+  { source?: string; merge?: boolean; accepted?: number; first?: string; firstEnd?: 'length' | 'toolUse' | 'silent'; ends?: number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-size-'));
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
   let calls = 0;
@@ -34,10 +34,13 @@ async function attempts(first: number, { source = 'user: ' + 'a long message '.r
       if (Array.isArray(request) && request.length > 2) sentStep = request.map(c => c.type === 'text' ? c.text : '')[1];
       const stream = createAssistantMessageEventStream();
       const end = calls < ends ? firstEnd ?? 'stop' : 'stop';
-      const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: calls++ ? 'x'.repeat(400) : text.repeat(first) },
+      const line = { type: 'text' as const, text: calls++ ? 'x'.repeat(400) : text.repeat(first) };
+      // A silent reply spends all its output thinking and stops normally, with no text.
+      const stop = end === 'silent' ? 'stop' : end;
+      const message: AssistantMessage = { role: 'assistant', content: end === 'silent' ? [{ type: 'thinking', thinking: 'both lines say the same thing' }] : [line,
         ...end === 'toolUse' ? [{ type: 'toolCall' as const, id: 'call-1', name: 'zoom', arguments: { id: 0 } }] : []], api: model.api,
-        provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: end, usage: emptyUsage() };
-      queueMicrotask(() => { stream.push({ type: 'done', reason: end, message }); stream.end(); });
+        provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: stop, usage: emptyUsage() };
+      queueMicrotask(() => { stream.push({ type: 'done', reason: stop, message }); stream.end(); });
       return stream;
     },
   });
@@ -54,10 +57,14 @@ test('a summary up to 640 bytes is kept; one over 640 is retried', async () => {
   assert.deepEqual(await attempts(641), { calls: 2, bytes: 400 });
 });
 
-test('a reply cut off at the token limit, or one that calls a tool, is no summary: it is asked again', async () => {
+test('a reply cut off at the token limit, one that calls a tool, or one with no text at all is no summary: it is asked again', async () => {
   assert.deepEqual(await attempts(100, { firstEnd: 'length' }), { calls: 2, bytes: 400 }, 'a short line cut off by stopReason length');
   assert.deepEqual(await attempts(100, { firstEnd: 'toolUse' }), { calls: 2, bytes: 400 }, 'a short line beside a tool call');
-  await assert.rejects(attempts(100, { firstEnd: 'length', ends: 5 }), /^Error: Compactor returned no whole line in 5 tries\.$/);
+  assert.deepEqual(await attempts(100, { firstEnd: 'silent' }), { calls: 2, bytes: 400 }, 'thinking only, no text');
+  // 5 of them are a refusal, so the node is not asked again (#193).
+  const refused = (error: Error) => error instanceof Refused && error.message === 'Compactor returned no whole line in 5 tries.';
+  await assert.rejects(attempts(100, { firstEnd: 'length', ends: 5 }), refused);
+  await assert.rejects(attempts(100, { firstEnd: 'silent', ends: 5 }), refused);
 });
 
 test('the profile\'s summary size tolerance decides when a line is retried', async () => {
