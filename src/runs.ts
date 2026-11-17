@@ -13,6 +13,8 @@ export const runStates = ['running', 'waiting', 'stopping', 'completed', 'failed
 export type RunState = typeof runStates[number];
 export interface RunInfo {
   id: string; task: string; cwd: string; model: string; thinking: string;
+  /** The spawning agent's short label for the task, shown instead of it where there is room for one line. */
+  title?: string;
   parentSession: string; sessionFile?: string; started: number; ended?: number;
   parentId?: string; depth: number;
   state: RunState; report?: string;
@@ -25,6 +27,8 @@ export interface RunInfo {
   /** `from` is missing on runs saved before senders were recorded. */
   guidance: { text: string; date: number; state: 'queued' | 'delivered' | 'undelivered'; from?: 'user' | 'manager' }[];
 }
+/** How a run's reports and messages start: `[id]`, or `[id · title]` (see `HEAD` in report-message.ts). */
+export const reportHead = (run: { id: string; title?: string }) => `[${run.id}${run.title ? ` · ${run.title}` : ''}]`;
 const moves: Record<RunState, readonly RunState[]> = {
   running: ['waiting', 'paused', 'stopping', 'completed', 'failed', 'stopped', 'interrupted'],
   waiting: ['running', 'paused', 'stopping', 'completed', 'failed', 'stopped', 'interrupted'],
@@ -48,6 +52,7 @@ function isRun(value: unknown): value is RunInfo {
     && typeof value.id === 'string' && /^[a-zA-Z0-9-]+$/.test(value.id)
     && runStates.includes(value.state as RunState) && typeof value.started === 'number' && Number.isFinite(value.started)
     && (value.ended === undefined || typeof value.ended === 'number')
+    && (value.title === undefined || typeof value.title === 'string')
     && (value.sessionFile === undefined || typeof value.sessionFile === 'string')
     && (value.report === undefined || typeof value.report === 'string')
     && (value.cutOff === undefined || typeof value.cutOff === 'boolean')

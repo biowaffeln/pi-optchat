@@ -9,7 +9,8 @@ import type { Children } from './agents.ts';
 import type { RunInfo } from './runs.ts';
 import { textContent } from './transcript.ts';
 import { record } from './cache.ts';
-import { elapsed, fit, oneLine } from './inspector.ts';
+import { agentLabel, elapsed, fit, oneLine } from './inspector.ts';
+import { isReport } from './report-message.ts';
 
 export type ViewTone = 'accent' | 'muted' | 'dim' | 'error' | 'warning' | 'success' | 'borderMuted';
 type ToolResult = Parameters<ToolExecutionComponent['updateResult']>[0];
@@ -23,12 +24,10 @@ const builtIns: Record<string, (cwd: string) => Renderers> = {
   grep: createGrepToolDefinition, find: createFindToolDefinition, ls: createLsToolDefinition,
 };
 
-/** Reports from the child's own agents start with their id, e.g. "[1a2b3c4d] ...". */
-const REPORT = /^\[[0-9a-f]{8}\] /;
 
 /** Who a user-role message in the child's conversation came from. Runs saved before senders were recorded count as the user's. */
 export function senderOf(text: string, guidance: Guidance = []): 'user' | 'manager' | 'report' {
-  if (REPORT.test(text)) return 'report';
+  if (isReport(text)) return 'report';
   return guidance.findLast(g => g.text === text)?.from === 'manager' ? 'manager' : 'user';
 }
 
@@ -267,7 +266,7 @@ export class AgentView implements Component, Focusable {
     const left = ` ${dot} ${color('accent', run.id)}  `;
     const room = width - visibleWidth(left) - visibleWidth(right) - 3;
     if (room < 8) return truncateToWidth(`${left}${color('dim', right)}`, width);
-    const task = fit(oneLine(run.task), room);
+    const task = fit(agentLabel(run), room);
     return `${left}${task}${' '.repeat(Math.max(2, width - visibleWidth(left) - visibleWidth(task) - visibleWidth(right) - 1))}${color('dim', right)} `;
   }
   render(width: number): string[] {

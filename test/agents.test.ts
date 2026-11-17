@@ -62,7 +62,7 @@ test('by default (Group subagent reports off), real SDK children stream, deliver
     async text => { reports.push(text); }, text => warnings.push(text), dir,
     { settings: nested, usage, parentSession: 'parent-session', createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
   try {
-    const [slow, fast, stopped] = await children.spawn([{ task: 'slow' }, { task: 'fast' }, { task: 'stop-me' }], dir);
+    const [slow, fast, stopped] = await children.spawn([{ task: 'slow' }, { task: 'fast', title: ' [Quick]\nlabel ' }, { task: 'stop-me' }], dir);
     await until(() => releases.size === 3);
     await until(() => !!children.live(slow)?.streaming);
     assert.ok(JSON.stringify(children.messages(slow)).includes('Working on slow'));
@@ -73,7 +73,7 @@ test('by default (Group subagent reports off), real SDK children stream, deliver
     assert.equal(children.history.records.get(slow)?.guidance[0].state, 'queued');
     releases.get('fast')!();
     await until(() => reports.length === 1);
-    assert.match(reports[0], new RegExp(`^\\[${fast}\\]`));
+    assert.ok(reports[0].startsWith(`[${fast} · Quick label] Working on fast`), 'the report starts with the id and the title, on one line');
     assert.ok(reports[0].endsWith(`\n\nFull chat: zoom("${fast}")`), 'the report says how to read the whole chat');
     assert.equal(children.history.records.get(slow)?.state, 'running', 'fast must report before slow finishes');
     await children.tell(stopped, 'This should remain undelivered.');
@@ -91,6 +91,8 @@ test('by default (Group subagent reports off), real SDK children stream, deliver
     assert.equal(usage.entries.length, before, 'reloading saved children must not double count usage');
     assert.ok(restored.messages(slow).some(m => m.role === 'user' && textContent(m.content) === 'Please include tests.'));
     assert.equal(restored.history.records.get(fast)?.state, 'completed');
+    assert.equal(restored.history.records.get(fast)?.title, 'Quick label', 'the title survives /reload');
+    assert.equal(restored.history.records.get(slow)?.title, undefined);
     assert.equal(new RunHistory(join(dir, 'other-profile')).list().length, 0);
     await restored.close();
 

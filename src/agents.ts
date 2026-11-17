@@ -14,13 +14,14 @@ import { findSandbox, READ_ONLY_TOOLS, sandboxedBashTool, type Sandbox } from '.
 import { VIEW, type Kind, type Memory } from './memory.ts';
 import type { ModelChoice } from './compactor.ts';
 import { cachePayload } from './cache.ts';
-import { CUT_OFF, RunHistory, isRunning, transition, sessionMessages, type RunInfo, type RunState } from './runs.ts';
+import { CUT_OFF, reportHead, RunHistory, isRunning, transition, sessionMessages, type RunInfo, type RunState } from './runs.ts';
 import { UsageLedger } from './usage.ts';
 import { fullChat, refreshFraction, textContent } from './transcript.ts';
 import { Type, type Static } from 'typebox';
 import { result } from './tools.ts';
 import { DEFAULT_SETTINGS, type Settings } from './settings.ts';
 import { THINKING } from './profiles.ts';
+import { oneLine } from './inspector.ts';
 
 export interface LiveRun {
   session: AgentSession; info: RunInfo; updated: number; streaming?: AgentMessage;
@@ -70,9 +71,10 @@ const packageName = (path: string): string | undefined => {
 /** A task's cwd may start with `~` and may be relative to the spawning agent's directory. */
 export const taskDirectory = (cwd: string, path = '.', windows = process.platform === 'win32') =>
   resolve(cwd, path.replace(windows ? /^~(?=$|[\\/])/ : /^~(?=$|\/)/, homedir()));
+const TITLE_DOC = 'Short label shown to the user, e.g. "Fix steering bug"';
 const CWD_DOC = 'Project directory the subagent works in (~ allowed); its AGENTS.md files load from there. Defaults to your current directory.';
 /** The spawn tools' tasks. What a task leaves out of model and thinking is the profile's subagent choice. */
-export const TASKS = Type.Array(Type.Object({ task: Type.String(), cwd: Type.Optional(Type.String({ description: CWD_DOC })),
+export const TASKS = Type.Array(Type.Object({ task: Type.String(), title: Type.Optional(Type.String({ description: TITLE_DOC })), cwd: Type.Optional(Type.String({ description: CWD_DOC })),
   role: Type.Optional(Type.String({ description: 'A role from your instructions (scout, reviewer, ...): presets model, thinking, tools and memory for the task. Pick one freely when it fits; fields set on the task override it.' })),
   model: Type.Optional(Type.String({ description: 'Leave unset for the role\'s or the profile\'s subagent model (named in your instructions). Set only when the user asks for a model, as provider/id from models().' })),
   thinking: Type.Optional(StringEnum(THINKING, { description: 'Leave unset for the role\'s or the profile\'s subagent level. Set only when the user asks for one.' })),
@@ -81,7 +83,7 @@ export const TASKS = Type.Array(Type.Object({ task: Type.String(), cwd: Type.Opt
   isolation: Type.Optional(StringEnum(['worktree'] as const, { description: '"worktree": the subagent works in its own git worktree on a new branch optchat/<id> from the HEAD of the repo holding cwd. On finish, its changes are committed on that branch (named in its report); with none, worktree and branch are removed.' })) }), { minItems: 1 });
 export type Task = Static<typeof TASKS>[number];
 /** A task with its role, model and options resolved: task fields win over the role, the role over the profile's defaults. */
-interface Resolved { task: string; cwd?: string; model: Model<Api>; thinking: ModelChoice['thinking']; role?: string; tools: ToolSet; memory: boolean; isolation?: 'worktree' }
+interface Resolved { task: string; title?: string; cwd?: string; model: Model<Api>; thinking: ModelChoice['thinking']; role?: string; tools: ToolSet; memory: boolean; isolation?: 'worktree' }
 /** What open() builds a child session with, new or resumed. */
 interface ChildOptions { tools: ToolSet; memory: boolean; worktree?: Worktree }
 /** The tool beside spawn that lists what a task's `model` may be. */
@@ -194,7 +196,7 @@ export class Children {
       // A role's model is never swapped for another: the role was picked for it.
       if (!model || named && !this.registry.hasConfiguredAuth(model)) throw new Error(`${task.model === undefined && role?.model ? `Task ${i + 1}: role ${task.role}'s model is unavailable: ${name}. Pick another role or name a model. ` : `Subagent model unavailable: ${name}. `}Models you can use: ${this.registry.getAvailable().map(m => `${m.provider}/${m.id}`).join(', ') || 'none'}.`);
       const tools = parentTools === 'readonly' ? 'readonly' : task.tools ?? role?.tools ?? 'all';
-      return { task: task.task, cwd: task.cwd, model, thinking: task.thinking ?? role?.thinking ?? profile.thinking, role: task.role, tools,
+      return { task: task.task, title: task.title, cwd: task.cwd, model, thinking: task.thinking ?? role?.thinking ?? profile.thinking, role: task.role, tools,
         memory: task.memory ?? role?.memory ?? true, isolation: task.isolation };
     });
   }
@@ -341,7 +343,9 @@ export class Children {
           session = await this.open({ id, directory, depth, parentId, model: task.model, thinking: task.thinking, tools: task.tools, memory: task.memory, worktree,
             sessionManager: SessionManager.create(directory, join(this.profileDirectory, 'runs')) });
         } catch (error) { if (worktree) await discardWorktree(worktree); throw error; }
-        const info: RunInfo = { id, task: task.task, cwd: directory, model: `${task.model.provider}/${task.model.id}`, thinking: session.thinkingLevel,
+        // One short line without brackets, so the `[id · title]` head of its reports stays parseable and small.
+        const title = oneLine(task.title ?? '').replace(/[[\]]/g, '').trim().slice(0, 128).trimEnd();
+        const info: RunInfo = { id, task: task.task, ...(title ? { title } : {}), cwd: directory, model: `${task.model.provider}/${task.model.id}`, thinking: session.thinkingLevel,
           parentSession: this.options.parentSession ?? '', parentId, depth, sessionFile: session.sessionFile, started: Date.now(), state: 'running', guidance: [],
           ...task.role !== undefined && { role: task.role }, tools: task.tools, memory: task.memory, ...worktree && { worktree } };
         const live: LiveRun = { session, info, updated: Date.now(), tools: new Map(), pendingReports: [], pendingGuidance: [] };
@@ -435,7 +439,7 @@ export class Children {
       parameters: Type.Object({ message: Type.String() }), execute: async (_id: string, args: { message: string }) => {
         const message = args.message.trim();
         if (!message) throw new Error('Message is empty.');
-        const text = `[${id}] Message from subagent (still running): ${message}`;
+        const text = `${reportHead(this.history.records.get(id) ?? { id })} Message from subagent (still running): ${message}`;
         if (!await this.toParent(parentId, text)) throw new Error('Your parent is no longer running.');
         return result(parentId ? `Message sent to parent ${parentId}.` : 'Message sent to the main agent.');
       },
@@ -483,7 +487,7 @@ export class Children {
             if (transition(info, 'paused')) {
               this.save(info);
               // In a grouped spawn the note takes the run's place, so its siblings' reports are not held until the user comes back; its later report arrives on its own.
-              const note = `[${info.id}] Interrupted by the user; it waits for their next message, so no report until then.`, batch = live.batch;
+              const note = `${reportHead(info)} Interrupted by the user; it waits for their next message, so no report until then.`, batch = live.batch;
               live.batch = undefined;
               await (batch ? this.deliver(info, batch, note) : this.toParent(info.parentId, note))
                 .catch(error => this.warn(`Could not tell the parent about the interrupt: ${String(error)}`));
@@ -555,11 +559,11 @@ export class Children {
     // A metadata failure must not suppress delivery of the actual result.
     try { this.save(info); } catch (error) { this.warn(`Could not save run metadata: ${String(error)}`); }
     // A deleted run's transcript is gone.
-    await this.deliver(info, live.batch, `[${info.id}] ${info.report}${this.deleting.has(info.id) ? '' : `\n\n${fullChat(info.id)}`}`);
+    await this.deliver(info, live.batch, `${reportHead(info)} ${info.report}${this.deleting.has(info.id) ? '' : `\n\n${fullChat(info.id)}`}`);
   }
   /** Commits a settled run's changes on its branch and removes its worktree; never throws, since the report must still go out. */
   private async settleWorktree(info: RunInfo, tree: Worktree) {
-    const title = info.task.trim().split('\n')[0].slice(0, 60);
+    const title = info.title ?? info.task.trim().split('\n')[0].slice(0, 60);
     try { return await finishWorktree(tree, `OptChat subagent ${info.id}${info.role ? ` (${info.role})` : ''}: ${title}`); }
     catch (error) {
       this.warn(`Could not settle the worktree of ${info.id}: ${String(error)}`);

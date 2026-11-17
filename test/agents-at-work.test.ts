@@ -11,6 +11,7 @@ const view = '<chat>\n' + '0+1|line\n'.repeat(400) + '</chat>';
 test('the status line names running agents by id and first task words, under a label the main prompt explains', () => {
   assert.equal(atWork([{ id: 'a1', task: 'Review PR #123 "carefully"\nthen report back to me' }, { id: 'b2', task: 'Fix it' }]),
     '[OptChat status] Agents at work now: a1 "Review PR #123 \'carefully\' then report…", b2 "Fix it".');
+  assert.equal(atWork([{ id: 'd4', task: 'A long task text', title: 'Fix steering bug' }]), '[OptChat status] Agents at work now: d4 "Fix steering bug".', 'a spawn title names it instead');
   assert.equal(atWork([{ id: 'c3', task: 'x'.repeat(5_000) }]), `[OptChat status] Agents at work now: c3 "${'x'.repeat(60)}…".`, 'a long word is cut too');
   assert.match(MASTER, /"\[OptChat status\]" is OptChat's own note/);
 });

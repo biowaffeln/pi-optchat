@@ -8,6 +8,8 @@ import { ranges, summarizeUsage, type UsageLedger, type UsageRange, type UsageRo
 
 export const clean = (text: string) => text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '').replace(/\t/g, '  ');
 export const oneLine = (text: string) => clean(text).replace(/\n/g, ' ');
+/** How an agent is named to the user: its spawn title, else its task on one line. */
+export const agentLabel = (run: { task: string; title?: string }) => run.title ?? oneLine(run.task);
 export const count = (n: number) => n.toLocaleString('en-US');
 const units = ['', 'k', 'M', 'B'];
 /** 950, 12.3k, 164k, 2.4M: enough precision to compare rows at a glance. A value that rounds to 1000 moves up a unit. */
@@ -191,7 +193,7 @@ export class Inspector implements Component, Focusable {
       const rows = list.slice(this.top, this.top + this.height).map(run => {
         const live = children.live(run.id), tools = live ? [...live.tools.values()].map(t => t.name).join(', ') : '';
         const status = live ? `${run.state === 'stopping' ? 'stopping' : run.state === 'waiting' ? 'waiting for children' : run.state === 'paused' ? 'interrupted · waiting for you' : tools || (live.streaming ? 'responding' : 'working')} · ${elapsed(Date.now() - live.updated)} ago` : run.state;
-        return { run, task: `${'  '.repeat(run.depth - 1)}${run.parentId ? '↳ ' : ''}${oneLine(run.task)}`, status, time: elapsed((run.ended ?? Date.now()) - run.started) };
+        return { run, task: `${'  '.repeat(run.depth - 1)}${run.parentId ? '↳ ' : ''}${agentLabel(run)}`, status, time: elapsed((run.ended ?? Date.now()) - run.started) };
       });
       // Columns: task (flexible) · status · duration (right-aligned); status yields first on narrow screens.
       const timeWidth = Math.max(0, ...rows.map(r => r.time.length));

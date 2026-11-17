@@ -158,11 +158,11 @@ export function runTranscript(messages: readonly AgentMessage[]) {
   }).join('\n');
 }
 
-/** The status line naming running agents by id and the first words of their task; none while nothing runs. */
-export function atWork(runs: readonly { id: string; task: string }[]) {
+/** The status line naming running agents by id and the first words of their title or task; none while nothing runs. */
+export function atWork(runs: readonly { id: string; task: string; title?: string }[]) {
   if (!runs.length) return undefined;
-  return AT_WORK + runs.map(({ id, task }) => {
-    const words = flat(task).replaceAll('"', "'").split(/\s+/).filter(Boolean), start = words.slice(0, 6).join(' ');
+  return AT_WORK + runs.map(({ id, task, title }) => {
+    const words = flat(title ?? task).replaceAll('"', "'").split(/\s+/).filter(Boolean), start = words.slice(0, 6).join(' ');
     // Six words, but never more than 60 characters: a task can be one long word.
     const preview = [...start].slice(0, 60).join('');
     return `${id} "${preview}${words.length > 6 || preview.length < start.length ? '…' : ''}"`;

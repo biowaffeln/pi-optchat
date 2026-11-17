@@ -87,9 +87,13 @@ What it does not stop:
 - Deleting a run in the inspector doesn't delete its branch. Merge or delete `optchat/<id>` branches yourself.
 - The worktree path and branch are saved with the run and shown in the agent view's header.
 
+## Titles
+
+A spawn task may carry a `title`, a short label the agent writes for you. The Agents page, the agent view and the "agents at work" status line show it instead of the task's first line, the child's reports start `[id · title]`, and a worktree's commit message uses it. A task without one shows its first line, as before. The title is saved with the run, so it survives `/reload`.
+
 ## Reports
 
-Each child reports to its parent as soon as it finishes, as one message starting `[id]`. The parent stays alive to receive reports; it never polls.
+Each child reports to its parent as soon as it finishes, as one message starting `[id]` (`[id · title]` with a title). The parent stays alive to receive reports; it never polls.
 
 - A failed child reports its error text.
 - A child whose request aborts with no stop (a provider abort) still reports `Task aborted: ...`.
