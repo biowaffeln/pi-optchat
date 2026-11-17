@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 import { saveImages } from '../src/images.ts';
-import { Memory, PAGE } from '../src/memory.ts';
+import { Memory, PAGE, Refused, type Compression, type Compressor } from '../src/memory.ts';
 import { memoryTools } from '../src/tools.ts';
 import { logMessage, textContent } from '../src/transcript.ts';
 import { removeDir } from './support.ts';
@@ -63,4 +63,46 @@ test('a large image is shrunk to 2048 px on its long side and about 1.5 MB', () 
   assert.deepEqual([gradient.bytes.readUInt32BE(16), gradient.bytes.readUInt32BE(20)], [2048, 1536]);
   assert.match(noisy.file, /\.jpg$/);
   assert.ok(noisy.bytes.length <= 1.5 * 1024 * 1024, `${noisy.bytes.length} bytes`);
+}));
+
+/** A memory on `compress`, with one small red image kept. */
+async function imageMemory(compress: Compressor, run: (memory: Memory, red: ReturnType<typeof image>) => Promise<void>, retryMs?: number) {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-images-'));
+  const memory = new Memory(dir, compress, () => {}, undefined, undefined, retryMs), red = image(png(2, 2, () => [255, 0, 0]));
+  try { await saveImages(memory.store, [red]); await run(memory, red); } finally { await memory.close(); removeDir(dir); }
+}
+
+test('a short message naming a kept image is summarized with that image; one naming no kept image, or a zoom page, stays word for word', async () => {
+  const inputs: Compression[] = [];
+  await imageMemory(async input => { inputs.push(input); return 'user sent a red square'; }, async (memory, red) => {
+    memory.append('user', textContent([red]));
+    memory.append('user', '[image 0123456789abcdef]');
+    memory.append('echo', `zoom: 0+1|user: ${textContent([red])}`);
+    await memory.settle();
+    assert.deepEqual(inputs.map(input => input.images), [[{ name: /[0-9a-f]{16}/.exec(textContent([red]))?.[0], image: red }]]);
+    assert.deepEqual([0, 1].map(i => memory.node({ l: 0, i })?.text), ['user sent a red square', 'user: [image 0123456789abcdef]']);
+  });
+});
+
+test('a failed image read leaves the leaf to be built later, with the image', async () => {
+  const inputs: Compression[] = [];
+  await imageMemory(async input => { inputs.push(input); return 'user sent a red square'; }, async (memory, red) => {
+    const read = memory.store.image.bind(memory.store);
+    let down = true;
+    memory.store.image = name => { if (down) throw new Error('image store unavailable'); return read(name); };
+    memory.append('user', textContent([red]));
+    await memory.settle();
+    assert.equal(memory.node({ l: 0, i: 0 }), undefined);
+    assert.match(memory.lastError ?? '', /image store unavailable/);
+    down = false;
+    await memory.settle(undefined, 'tree');
+    assert.deepEqual(inputs.map(input => input.images), [[{ name: /[0-9a-f]{16}/.exec(textContent([red]))?.[0], image: red }]]);
+    assert.equal(memory.node({ l: 0, i: 0 })?.text, 'user sent a red square');
+  }, 10);
+});
+
+test('a short image message the compactor refuses keeps its words', () => imageMemory(async () => { throw new Refused('no'); }, async (memory, red) => {
+  memory.append('user', textContent([red]));
+  await memory.settle();
+  assert.equal(memory.node({ l: 0, i: 0 })?.text, `user: ${textContent([red])}`);
 }));

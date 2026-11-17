@@ -3,7 +3,7 @@ import { clampThinkingLevel, isRetryableAssistantError, type Api, type Assistant
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
 import { COMPACT, compaction, IMPORT_GUIDANCE, tooLong } from './prompts.ts';
-import { bytes, cut, Refused, type Compressor } from './memory.ts';
+import { bytes, cut, NODE, Refused, type Compressor } from './memory.ts';
 import { cachePayload, splitView } from './cache.ts';
 import { DEFAULT_SETTINGS } from './settings.ts';
 
@@ -68,10 +68,17 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     const model = registry.find(selected.provider, selected.model);
     if (!model) throw new Error(`Compactor model unavailable: ${selected.provider}/${selected.model}. Use /optchat model.`);
     const thinking = reasoningFor(model, selected.thinking);
-    const step = `${input.historical ? IMPORT_GUIDANCE + '\n\n' : ''}${compaction(input)}`;
+    // A model without image input gets none, and a short message it can't see more of stays its own line, word for word.
+    const short = bytes(input.source) <= NODE;
+    let images = model.input.includes('image') ? input.images : [];
+    if (short && !images.length) return input.source;
+    // The images go after the task, so the view stays the cached prefix its sibling compactions share; each follows its name.
     // OpenAI joins text blocks with nothing between them, so the task starts its own paragraph after the view.
-    const request = (note?: string): Message[] => [{ role: 'user', timestamp: Date.now(),
-      content: [{ type: 'text', text: input.context }, { type: 'text', text: `\n\n${step}` }, ...note ? [{ type: 'text' as const, text: `\n\n${note}` }] : []] }];
+    const request = (note?: string): Message[] => [{ role: 'user', timestamp: Date.now(), content: [
+      { type: 'text', text: input.context },
+      { type: 'text', text: `\n\n${input.historical ? IMPORT_GUIDANCE + '\n\n' : ''}${compaction({ ...input, images })}` },
+      ...note ? [{ type: 'text' as const, text: `\n\n${note}` }] : [],
+      ...images.flatMap(({ name, image }) => [{ type: 'text' as const, text: `\n[image ${name}]` }, image])] }];
     let messages = request();
     const view = splitView(input.context);
     const prefix = model.api === 'anthropic-messages' && view.length > 1 ? `${model.provider}/${model.id}/${thinking ?? 'off'}\n${view.slice(0, -1).join('')}` : undefined;
@@ -93,11 +100,17 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     const answer = () => retryTransient(ask, onUsage, retryDelays, signal);
     for (let attempt = 0; attempt < 5; attempt++) {
       const reply = await answer();
+      // Any error the retry rule doesn't cover, with images sent: the images (too big, too many), which every retry would send again,
+      // or not (a bad key, no quota, a dropped connection). Asked once more by name only, the second kind fails again below and the
+      // summary is tried again later, images and all. It is not one of the 5 tries, so a fifth reply can't end the loop without it.
+      if (images.length && reply.stopReason === 'error' && !isRetryableAssistantError(reply)) { images = []; messages = request(); attempt--; continue; }
       // A stop reason means the model answered: a refusal or a content filter, which asking again repeats.
       // A provider's own 'error' stop (Mistral) is a failure on its side, not an answer: a plain error, tried again later.
       if (reply.stopReason === 'error' && reply.rawStopReason !== undefined && reply.rawStopReason !== 'error' && !isRetryableAssistantError(reply))
         throw new Refused(reply.errorMessage ?? `Compactor stopped: ${reply.rawStopReason}`);
       if (reply.stopReason === 'error' || reply.stopReason === 'aborted') throw new Error(reply.errorMessage ?? `Compactor ${reply.stopReason}`);
+      // Answered by name only, so the images were the error: a short message has nothing more to say than its names.
+      if (short && !images.length) return input.source;
       // A reply cut off at the token limit, or one that calls a tool, is no summary: ask again.
       if (reply.stopReason === 'length' || reply.content.some(c => c.type === 'toolCall')) continue;
       // The compactions' view shows each line under its id+n| head, which a line can copy.
@@ -105,8 +118,9 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
       // Nor is one with no text at all, such as a reply that spends all its output thinking: ask again. 5 such replies are a refusal.
       if (!line) continue;
       tries.push(line);
-      // A merge of two short lines can come back nearly as big as both, so a line must also shrink what it replaces.
-      if (bytes(line) <= accepted() && bytes(line) < bytes(input.source)) break;
+      // A merge of two short lines can come back nearly as big as both, so a line must also shrink what it replaces; a line that
+      // says what images show may be longer than the names it replaces.
+      if (bytes(line) <= accepted() && (images.length > 0 || bytes(line) < bytes(input.source))) break;
       // As in the recipe, a retry sends the same blocks plus one note on the last line's size and where the limit cuts it,
       // never the earlier replies or their thinking: the request stays the same size, and the model isn't anchored on its own line.
       messages = request(tooLong(bytes(line), cut(line)));

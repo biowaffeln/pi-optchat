@@ -17,6 +17,7 @@ The README has the summary table. This page has the detail: what changed in each
 - **Compaction task and "Too long" retry.** The recipe's, verbatim, with a 512-dash ruler for the size.
 - **Compactor instructions.** Unlike the recipe, the compactor doesn't get your instructions: an A/B found they added nothing (#112).
 - **Tool results.** A tool result's leaf summary also gets the raw tool call it answers, as a `<call>` block of context (#153 A/B: recall 3.88 → 4.22).
+- **Images.** A message's leaf summary gets the images it names after the task, each after its `[image <name>]`, with one sentence asking it to say what matters in each and keep each `[image <name>]`; such a message is summarized even when short, and its line may be longer than its source. A zoom's page doesn't send its images again. A model without image input gets none, and a provider that rejects them is asked once more by name only. Merges stay text. Upstream's A/B (Sonnet 5.5, 18 chats) kept image facts in 100% of leaves and 97% of roots, against 0% and 1% without, for about 1¢ an image.
 - **Subagent prompt.** The original's, plus a closing note on time: report progress on long tasks with `tell_parent`, and say so before waiting on something slow, so the main agent can go on.
 
 ## Numbers kept from the recipe

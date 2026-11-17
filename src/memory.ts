@@ -1,4 +1,6 @@
 import { EventEmitter } from 'node:events';
+import type { ImageContent } from '@earendil-works/pi-ai';
+import { namedImages } from './images.ts';
 import { FileStore, storeFor, type Saved, type Store } from './store.ts';
 
 export const NODE = 512;
@@ -16,8 +18,10 @@ export interface Entry { i: number; kind: Kind; text: string; size: number; date
 export interface Part { l: number; i: number }
 export interface Summary extends Part { text: string; size: number }
 /** `part` is the node to build: a message's leaf, or the merge of its two halves. `call` is the tool call a tool result's leaf
- * answers, raw, since its own line is often not built yet (#153). */
-export interface Compression { context: string; source: string; part: Part; historical?: boolean; call?: { i: number; text: string } }
+ * answers, raw, since its own line is often not built yet (#153). `images` are the kept images a leaf's `source` names, with
+ * those names, in order (none for a merge): a message with any is compressed even when short, since its line is all that merges
+ * will ever know of them. */
+export interface Compression { context: string; source: string; part: Part; historical?: boolean; call?: { i: number; text: string }; images: { name: string; image: ImageContent }[] }
 export type Compressor = (input: Compression, signal: AbortSignal) => Promise<string>;
 /** A compressor throws this when the model itself gives no line for an input (a refusal, 5 cut-off or empty replies):
  * asked again it fails alike, so the node keeps the start of its source instead of being retried forever (#193). */
@@ -311,15 +315,21 @@ export class Memory {
       : [0, 1].map(offset => this.text({ l: part.l - 1, i: 2 * part.i + offset })).join('\n');
     const mergeSource = part.l > 0 ? [0, 1].map(offset => flat(this.text({ l: part.l - 1, i: 2 * part.i + offset }))).join('\n') : source;
     const call = part.l === 0 ? this.callOf(part.i) : undefined;
+    // A failed image read fails the build, which is retried like any store error; an image never kept is skipped. A zoom's page
+    // names images its message's own leaf already saw.
+    const input = cap(mergeSource, SOURCE);
+    // Only the images whose names the compactor gets: a huge message's cut middle sends neither.
+    const images = part.l === 0 && !this.copiesMemory(part.i) ? await namedImages(this.store, input) : [];
+    const short = bytes(source) <= NODE;
     let text = source;
-    if (bytes(source) > NODE) try {
-      text = (await this.compress({ context: this.compactionView(part), source: cap(mergeSource, SOURCE), part,
+    if (!short || images.length) try {
+      text = (await this.compress({ context: this.compactionView(part), source: input, part, images,
         historical: this.root.slice(start(part), end(part)).some(entry => !!entry.origin),
         ...(call ? { call: { i: call.i, text: cap(`tool: ${call.text}`, 4000) } } : {}) }, this.controller.signal)).trim();
       if (!text) throw new Refused('Compactor returned an empty summary.');
     } catch (error) {
       if (!(error instanceof Refused) || this.stopped) throw error;
-      text = cut(`${CLIPPED} ${flat(mergeSource)}`);
+      text = short ? source : cut(`${CLIPPED} ${flat(mergeSource)}`);
       this.warn(`Compactor ${start(part)}+${2 ** part.l}: ${error.message} (kept its start instead)`);
     }
     if (this.stopped) return;
@@ -416,11 +426,15 @@ export class Memory {
   search(text: string, before = this.root.length) {
     const needle = text.toLowerCase(), hits: Entry[] = [];
     for (let i = Math.min(before, this.root.length) - 1; i >= 0; i--) {
-      const entry = this.root[i];
-      if ((entry.kind === 'tool' || entry.kind === 'echo') && /^(zoom|search)[ :]/.test(entry.text)) continue;
-      if (entry.text.toLowerCase().includes(needle)) hits.push(entry);
+      if (this.copiesMemory(i)) continue;
+      if (this.root[i].text.toLowerCase().includes(needle)) hits.push(this.root[i]);
     }
     return hits;
+  }
+  /** A logged zoom or search call or result, which only copies memory. */
+  private copiesMemory(i: number) {
+    const { kind, text } = this.root[i];
+    return (kind === 'tool' || kind === 'echo') && /^(zoom|search)[ :]/.test(text);
   }
   date(id: number) {
     if (!Number.isSafeInteger(id) || !this.root[id]) throw new Error(`No message ${id}.`);

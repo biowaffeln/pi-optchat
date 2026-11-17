@@ -47,7 +47,7 @@ async function attempts(first: number, { source = 'user: ' + 'a long message '.r
   try {
     const compress = createCompressor(new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'compactor', thinking: 'off' }), undefined,
       accepted === undefined ? undefined : () => accepted);
-    const line = await compress({ context: '<chat>\n</chat>', source, part: merge ? { l: 1, i: 0 } : { l: 0, i: 0 } }, new AbortController().signal);
+    const line = await compress({ context: '<chat>\n</chat>', source, part: merge ? { l: 1, i: 0 } : { l: 0, i: 0 }, images: [] }, new AbortController().signal);
     return { calls, bytes: line.length };
   } finally { removeDir(dir); }
 }
@@ -85,9 +85,9 @@ test('a merge that is not smaller than the two lines it replaces is retried', as
 
 test('the task is the recipe\'s, with a 512-dash ruler for the size, and a merge names its lines and messages', () => {
   const ruler = '-'.repeat(NODE);
-  assert.equal(compaction({ source: 'user: hi', part: { l: 0, i: 40 } }),
+  assert.equal(compaction({ source: 'user: hi', part: { l: 0, i: 40 }, images: [] }),
     `Compaction: compress message 40 into one line of at most 512 bytes\n(about 70 words), the length of this ruler:\n${ruler}\n<input>\nuser: hi\n</input>`);
-  assert.equal(compaction({ source: 'a\nb', part: { l: 3, i: 5 } }),
+  assert.equal(compaction({ source: 'a\nb', part: { l: 3, i: 5 }, images: [] }),
     `Compaction: merge lines 40+4 and 44+4, adjacent, into one line of at most\n512 bytes (about 70 words), the length of this ruler:\n${ruler}\n`
     + `<chat> may hold their messages, 40 to 47, in more detail: take details\nof them from there too.\n<input>\na\nb\n</input>`);
 });

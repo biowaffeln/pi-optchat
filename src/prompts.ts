@@ -1,6 +1,6 @@
 import { rolesDoc, type Roles } from './roles.ts';
 import type { ModelChoice } from './compactor.ts';
-import { NODE, start, type Part } from './memory.ts';
+import { NODE, start, type Compression, type Part } from './memory.ts';
 
 // Prompts from Victor Taelin's OptChat recipe, lightly adapted; docs/recipe-differences.md lists the changes.
 export const COMPACT = `You are OptChat, an AI agent that works for one user in a single chat that never ends.
@@ -223,13 +223,15 @@ const callBlock = (i: number, call?: { i: number; text: string }) => call ? `<ca
 ${call.text}
 </call>
 ` : '';
-export function compaction({ source, part, call }: { source: string; part: Part; call?: { i: number; text: string } }) {
+export function compaction({ source, part, call, images }: Pick<Compression, 'source' | 'part' | 'call' | 'images'>) {
   if (!part.l) return `Compaction: compress message ${part.i} into one line of at most 512 bytes
 (about 70 words), the length of this ruler:
 ${RULER}
 ${callBlock(part.i, call)}<input>
 ${source}
-</input>`;
+</input>${images.length ? `
+After <input>, each image it names follows its [image <name>]. Say what matters in each, and keep
+each [image <name>] as written, so OptChat can zoom it.` : ''}`;
   const a = { l: part.l - 1, i: 2 * part.i }, b = { l: part.l - 1, i: 2 * part.i + 1 };
   return `Compaction: merge lines ${label(a)} and ${label(b)}, adjacent, into one line of at most
 512 bytes (about 70 words), the length of this ruler:

@@ -26,9 +26,13 @@ export async function saveImages(store: Store, content: unknown) {
   }
 }
 
-/** The kept images a text refers to, in order, each once; ones never kept are skipped. */
-export async function loadImages(store: Store, text: string): Promise<ImageContent[]> {
-  const names = [...new Set(Array.from(text.matchAll(REF), match => match[1]))];
-  return (await Promise.all(names.map(name => store.image(name))))
-    .flatMap(kept => kept ? [{ type: 'image' as const, data: Buffer.from(kept.data).toString('base64'), mimeType: kept.mimeType }] : []);
+/** The kept images a text refers to, with their names, in order, each once; ones never kept are skipped. */
+export async function namedImages(store: Store, text: string): Promise<{ name: string; image: ImageContent }[]> {
+  const names = [...new Set(Array.from(text.matchAll(REF), match => match[1]))], kept = await Promise.all(names.map(name => store.image(name)));
+  return names.flatMap((name, k) => {
+    const image = kept[k];
+    return image ? [{ name, image: { type: 'image' as const, data: Buffer.from(image.data).toString('base64'), mimeType: image.mimeType } }] : [];
+  });
 }
+/** The kept images a text refers to, in order, each once; ones never kept are skipped. */
+export const loadImages = async (store: Store, text: string) => (await namedImages(store, text)).map(({ image }) => image);
