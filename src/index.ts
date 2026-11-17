@@ -374,6 +374,11 @@ export default function optchat(pi: ExtensionAPI) {
   };
 
   pi.on('session_start', async (_event, ctx) => {
+    // A host can bind another session without a session_shutdown for the one still open here. Close that one first, as
+    // session_shutdown would (merge and close its branch, release its lock), so its branch isn't left live with nobody to close it.
+    // The same session starting again is Pi's RPC double bind, which openProfile keeps as it is.
+    if (active && active.session !== ctx.sessionManager.getSessionId())
+      await stop().catch(error => ctx.ui.notify(`OptChat could not close the previous session: ${errorText(error)}`, 'warning'));
     stopping = false;
     const entries = ctx.sessionManager.getEntries();
     const saved = entries.findLast(e => e.type === 'custom' && e.customType === binding);
