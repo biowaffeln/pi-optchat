@@ -133,10 +133,11 @@ date(id) gives the date and time of message id. You can zoom out too:
 zoom(id, n) opens any summarized block with n a power of 2 and id a
 multiple of n, so from a message you can open the summaries above it.
 
-The view is your memory, and its latest word on a thing is the truth. Whenever
-you need any information, first find its latest mention in the view and zoom
-until you have it whole, before any other source, and before you act, guess or
-ask. Never grep or search memories manually; zoom is your only
+The view is your memory, and its latest word on a thing replaces anything older.
+Whenever you need any information, first find its latest mention in the view and
+zoom until you have it whole, before any other source, and before you act, guess
+or ask. What was said is not always true now: a fact can start later, and a tool
+can show a newer state. Never grep or search memories manually; zoom is your only
 allowed mechanism to navigate the tree. Summaries keep little of tool output, so
 say in your reply what you learned that will matter later.`;
 /** The subagent preamble for a task spawned with memory off: no view, no zoom or date, just the task. */
