@@ -1,6 +1,6 @@
 {
-  "name": "pi-optchat",
-  "version": "0.11.3",
+  "name": "@biowaffeln/pi-optchat",
+  "version": "0.11.4",
   "type": "module",
   "pi": {
     "extensions": [
@@ -38,7 +38,7 @@
     "memory",
     "subagents"
   ],
-  "author": "Jonas",
+  "author": "Mark Kvetny <m.kvetny@outlook.com>",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -56,6 +56,13 @@
     "docs/*.md",
     "README.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
-  ]
+    "THIRD_PARTY_NOTICES.md",
+    "CHANGELOG.md"
+  ],
+  "contributors": [
+    "Jonas Silva (original author, jonaslsaa/pi-optchat)"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }

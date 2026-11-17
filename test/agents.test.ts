@@ -254,7 +254,7 @@ test('children get the main agent\'s extensions, AGENTS.md files and skills, but
   writeFileSync(join(agentDir, 'extensions', 'web.js'), tool('installed_web'));
   const copy = join(dir, 'optchat-copy');
   mkdirSync(join(copy, 'src'), { recursive: true });
-  writeFileSync(join(copy, 'package.json'), JSON.stringify({ name: 'pi-optchat', type: 'module', pi: { extensions: ['./src/index.js'] } }));
+  writeFileSync(join(copy, 'package.json'), JSON.stringify({ name: '@biowaffeln/pi-optchat', type: 'module', pi: { extensions: ['./src/index.js'] } }));
   writeFileSync(join(copy, 'src', 'index.js'), tool('optchat_copy'));
   writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({ packages: [copy] }));
   writeFileSync(join(dir, 'AGENTS.md'), 'REPO_RULES');

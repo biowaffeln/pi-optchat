@@ -22,17 +22,17 @@ It runs inside ordinary Pi, with no separate launcher.
 ## Install
 
 ```sh
-pi install git:github.com/biowaffeln/pi-optchat@v0.11.0
+pi install npm:@biowaffeln/pi-optchat
 pi install npm:pi-web-access   # optional, for web search and page fetching
 ```
 
-The tag pins the version, so `pi update` won't move it; install a newer tag to upgrade.
+`pi update` picks up new releases, and Pi shows what changed from `CHANGELOG.md` on the next launch.
 
 Requirements: Pi 1.0.2 or compatible, Node.js 22.19+, and Git. Tested on macOS; the offline tests also run on Linux and Windows.
 
 Web access is not bundled. Subagents load the Pi extensions you have installed (except pi-optchat itself), so installing `pi-web-access` gives web tools to the main agent and every subagent.
 
-To uninstall, run `pi remove git:github.com/biowaffeln/pi-optchat@v0.11.0`. Profile data is kept.
+To uninstall, run `pi remove npm:@biowaffeln/pi-optchat`. Profile data is kept.
 
 ## Quick start
 
@@ -129,7 +129,7 @@ Numbers must be whole numbers of at least 1 (512 for the summary size tolerance,
 Ask in plain words, for example: "Spawn an agent to investigate this repository and report back."
 
 - **What they get**: the profile's memory view (frozen at launch) and instructions, read-only `zoom`/`date`, normal coding tools, your installed extensions, and your MCP servers.
-- **Reports**: each child reports when it finishes, as one message starting `[id]`, shown in a dark grey `↳ subagent <id>` box. Turn on **Group subagent reports** to get one message per spawn instead.
+- **Reports**: each child reports when it finishes, as one message starting `[id]` (`[id · title]` when the task has a title), shown in a dark grey `↳ subagent <id>` box. Turn on **Group subagent reports** to get one message per spawn instead.
 - **Model**: children run the profile's subagent model. Ask for another in your request ("review it with anthropic/claude-haiku-5-5 at low") and the agent sets that task's `model` and `thinking`.
 - **Roles**: a task can name a role that presets its model, thinking, tools and memory. There are none by default: you define them under `roles` in the profile's `config.json`, using models you're logged in to. The agent picks a role on its own when one fits; fields set on the task win over the role. A setup that works well:
 
@@ -268,7 +268,7 @@ OptChat keeps the recipe's numbers: 512-byte lines, binary merges, the 128,000 �
 
 | Area | Recipe | OptChat | Why |
 | --- | --- | --- | --- |
-| Prompts | The original and 2026-10-08 prompts | The same, lightly adapted, all in `src/prompts.ts`: reports start `[id]`, a note on `[OptChat status]`, "don't poll slow things", the size limit as a ceiling rather than a target | Fit OptChat's tools; the size wording gave less filler with no recall loss (#129) |
+| Prompts | The original and 2026-10-08 prompts | The same, lightly adapted, all in `src/prompts.ts`: reports start `[id · title]`, a note on `[OptChat status]`, "don't poll slow things", the size limit as a ceiling rather than a target | Fit OptChat's tools; the size wording gave less filler with no recall loss (#129) |
 | Compactor instructions | Gets your instructions | Doesn't | An A/B found they added nothing (#112) |
 | Summary size | Strict 512 bytes | Asked for 512, keeps up to 640 without a retry | Saves retries for a little view space |
 | Memory view | Sawtooth, 128,000 → 64,000 bytes | Same, saved to `view.json` with the compactions' view and reloaded as they were | A restart keeps both prompt prefixes cached |
@@ -276,7 +276,7 @@ OptChat keeps the recipe's numbers: 512-byte lines, binary merges, the 128,000 �
 | Tool-result summaries | Result only | Also sees the raw tool call | Recall 3.88 → 4.22 (#153) |
 | Cache marks | View in 4-line blocks, one mark on the last whole block, one on the system prompt | One more mark 20 blocks before it (and 40 before it for compactions) | With one mark, a turn that added over 80 lines made the next turn rewrite the whole view; now up to 160 lines still read from cache |
 | Previous exchange | Memory view only | Last request and answer in full (up to 16 KB) | "Why is that?" refers to what you actually read |
-| Subagents | Reports start `[Name]` | Built in with Pi's SDK, not a separate package; reports start `[id]`; Subagent levels setting (default 1) | |
+| Subagents | Reports start `[Name]` | Built in with Pi's SDK, not a separate package; reports start `[id · title]`; Subagent levels setting (default 1) | |
 | Memory search | Not there | Opt-in `search` over original messages | Exact names, numbers and errors the view doesn't show |
 | Large messages | Returned whole, middle cut by the 30,000-character cap | `zoom(id, 1)` pages at 25,000 characters | Nothing cut out |
 | Long turns | No limit; a long turn can run out of window | Turn refresh at 30% of the window | Turns kept going past ~100K tokens (#146) |

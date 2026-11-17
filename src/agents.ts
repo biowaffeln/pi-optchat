@@ -91,7 +91,9 @@ export const modelsTool = (children: () => Children) => ({ name: 'models', label
   description: 'The models a spawn task may name, as provider/id, with the profile\'s subagent default marked. provider narrows the list to one provider.',
   parameters: Type.Object({ provider: Type.Optional(Type.String()) }),
   execute: async (_id: string, args: { provider?: string }) => result(children().models(args.provider)) });
-const isOptchat = (path: string) => packageName(path) === 'pi-optchat';
+/** This package under its npm name, and the unscoped name it had as a git install and still has upstream. */
+const OPTCHAT_NAMES = new Set(['@biowaffeln/pi-optchat', 'pi-optchat']);
+const isOptchat = (path: string) => OPTCHAT_NAMES.has(packageName(path) ?? '');
 /**
  * The tools a read-only child may have, an allowlist rather than a list of what to leave out, so an extension's tool that
  * writes can't slip through: Pi's read-only tools, bash only when it can run sandboxed, and OptChat's own tools by name.
