@@ -43,7 +43,7 @@ const promptFor = (prompt: string, { previousExchange, memorySearch }: ProfileCo
  * of the branch's log the trunk has. `seen`: the view's batch merges already looked at for a rebase. `changed`: when the log last grew. */
 interface Branch { dir: string; info: BranchInfo; release: () => Promise<void>; setStatus: (status: Record<string, unknown>) => void;
   merged: number; seen: number; length: number; changed: number }
-interface Active { name: string; dir: string; config: ProfileConfig; memory: Memory; inbox: Inbox; children: Children; usage: UsageLedger;
+interface Active { name: string; session: string; dir: string; config: ProfileConfig; memory: Memory; inbox: Inbox; children: Children; usage: UsageLedger;
   branch: Branch; compress: Compressor }
 /** How often an open session checks whether it has been idle long enough to merge. OPTCHAT_IDLE_MS (milliseconds) overrides
  * the Merge when idle setting, for tests. */
@@ -304,6 +304,10 @@ export default function optchat(pi: ExtensionAPI) {
   const openProfile = async (name: string, ctx: ExtensionContext) => {
     const dir = profilePath(name);
     if (!existsSync(dir)) throw new Error(`Profile ${name} does not exist. Use /optchat profile to create it.`);
+    // Pi's RPC mode binds extensions twice after new_session/switch_session/fork/clone (setRebindSession, then rebindSession()),
+    // so session_start can arrive again for the session this profile already serves. Opening it again would start a second
+    // branch and leave the first one live with nobody to close it. Only the same session is kept: another one is opened as usual.
+    if (active?.name === name && active.session === ctx.sessionManager.getSessionId()) { await restoreMain(ctx, active); status(ctx); return; }
     const config = loadConfig(dir);
     const quiet = (warning: string) => ctx.ui.notify(warning, 'warning');
     // Sessions whose Pi crashed or was killed are merged first, so this one starts with what they said.
@@ -336,7 +340,7 @@ export default function optchat(pi: ExtensionAPI) {
       atomicWrite(pending, JSON.stringify(reports));
       rememberProfile(name);
       const branch: Branch = { ...started, merged: memory.root.length, seen: memory.batches, length: memory.root.length, changed: Date.now() };
-      active = { name, dir, config, memory, inbox, children, usage, branch, compress }; fault = undefined; idle = () => ctx.isIdle();
+      active = { name, session: sessionId, dir, config, memory, inbox, children, usage, branch, compress }; fault = undefined; idle = () => ctx.isIdle();
       share(ctx);
       try { publishView(started.dir, memory.render()); } catch { /* published again after each turn */ }
       await restoreMain(ctx, active);
